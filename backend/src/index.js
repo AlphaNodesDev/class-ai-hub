@@ -399,8 +399,10 @@ const processJob = async (job) => {
           '--language', job.language || 'ml'
         ]);
         await updateVideoStatus(job.videoId, { subtitles: true });
+        const srtFilePath = trimmedPath.replace('.mp4', '.srt');
         await dbUpdate(`videos/${job.videoId}`, { 
-          subtitle_url: trimmedPath.replace('.mp4', '.srt') 
+          subtitle_url: `/processed/${path.basename(srtFilePath)}`,
+          processed_video_url: `/processed/${path.basename(trimmedPath)}`
         });
         
         // Dub
@@ -410,25 +412,40 @@ const processJob = async (job) => {
           '--src_lang', job.language || 'ml'
         ]);
         await updateVideoStatus(job.videoId, { dubbed: true });
+        const dubFilePath = trimmedPath.replace('.mp4', '_dub_en.mp4');
         await dbUpdate(`videos/${job.videoId}`, { 
-          dub_url: trimmedPath.replace('.mp4', '_english_dub.mp4') 
+          dub_url: `/processed/${path.basename(dubFilePath)}`
         });
         
         // OCR
         const notesPath = path.join(NOTES_DIR, `${job.videoId}_notes.md`);
         await runPythonScript('extract_board_notes.py', [
           trimmedPath,
-          '--output', notesPath
+          '--output', notesPath,
+          '--interval', '30'
         ]);
         await updateVideoStatus(job.videoId, { ocr_notes: true });
         
         // Generate PDF notes
         const pdfNotesPath = await generatePdfNotes(notesPath, notesPath.replace('.md', '.pdf'));
         await dbUpdate(`videos/${job.videoId}`, { 
-          notes_url: notesPath,
-          notes_pdf_url: pdfNotesPath,
-          processed_video_url: trimmedPath
+          notes_url: `/notes/${path.basename(notesPath)}`,
+          notes_pdf_url: pdfNotesPath ? `/notes/${path.basename(pdfNotesPath)}` : null
         });
+        
+        // Generate AI Questions from transcript
+        const transcriptPath = trimmedPath.replace('.mp4', '.txt');
+        const questionsPath = path.join(NOTES_DIR, `${job.videoId}_questions.json`);
+        if (fs.existsSync(transcriptPath)) {
+          await runPythonScript('generate_questions.py', [
+            transcriptPath,
+            '--output', questionsPath,
+            '--num_questions', '10'
+          ]);
+          await dbUpdate(`videos/${job.videoId}`, { 
+            questions_url: `/notes/${path.basename(questionsPath)}`
+          });
+        }
         
         // AI analysis
         const videoAnalysis = await analyzeVideoContent(trimmedPath);
