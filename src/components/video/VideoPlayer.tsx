@@ -52,7 +52,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   
   const { questions, isGenerating, generateQuestions } = useQuestionGenerator();
 
-  // Build the correct video URL
+  // Build the correct video URL from backend paths
   const getVideoUrl = (videoPath?: string) => {
     if (!videoPath) return null;
     
@@ -61,28 +61,52 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
       return videoPath;
     }
     
-    // If it's a relative path from backend, construct full URL
-    // The backend serves files from /processed, /uploads, etc.
-    const pathParts = videoPath.split('/');
+    // If path starts with /, it's already a relative URL from backend
+    // e.g., /processed/video.mp4 or /uploads/video.mp4
+    if (videoPath.startsWith('/')) {
+      return `${API_URL}${videoPath}`;
+    }
+    
+    // Extract just the filename and determine the folder
+    const pathParts = videoPath.replace(/\\/g, '/').split('/');
     const filename = pathParts[pathParts.length - 1];
     
-    if (videoPath.includes('/processed/')) {
+    // Determine which folder based on path content or filename
+    if (videoPath.includes('processed') || filename.includes('_trimmed') || filename.includes('_dub')) {
       return `${API_URL}/processed/${filename}`;
     }
-    if (videoPath.includes('/uploads/')) {
+    if (videoPath.includes('uploads')) {
       return `${API_URL}/uploads/${filename}`;
     }
-    if (videoPath.includes('/recordings/')) {
+    if (videoPath.includes('recordings')) {
       return `${API_URL}/recordings/${filename}`;
     }
+    if (videoPath.includes('notes') || filename.endsWith('.md') || filename.endsWith('.json')) {
+      return `${API_URL}/notes/${filename}`;
+    }
+    if (filename.endsWith('.srt') || filename.endsWith('.vtt')) {
+      return `${API_URL}/processed/${filename}`;
+    }
     
-    // Default: assume it's in processed folder
-    return `${API_URL}/processed/${filename}`;
+    // Default: try uploads first (original files go there)
+    return `${API_URL}/uploads/${filename}`;
   };
 
+  // Get the appropriate video source based on selected audio track
+  const getOriginalVideoUrl = () => {
+    // Priority: processed_video_url > original_video_url
+    const path = (video as any)?.processed_video_url || video?.original_video_url;
+    return getVideoUrl(path);
+  };
+
+  const getDubbedVideoUrl = () => {
+    return getVideoUrl(video?.dub_url);
+  };
+
+  // Use different video files for different audio tracks
   const videoSrc = audioTrack === 'english' && video?.dub_url 
-    ? getVideoUrl(video.dub_url)
-    : getVideoUrl(video?.original_video_url || (video as any)?.processed_video_url);
+    ? getDubbedVideoUrl()
+    : getOriginalVideoUrl();
 
   useEffect(() => {
     // Load subtitles
@@ -113,12 +137,17 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
 
   const loadSubtitles = async (url: string) => {
     try {
-      const fullUrl = url.startsWith('http') ? url : `${API_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+      // Build correct URL for subtitle file
+      const fullUrl = getVideoUrl(url) || url;
+      console.log('Loading subtitles from:', fullUrl);
       const response = await fetch(fullUrl);
       if (response.ok) {
         const text = await response.text();
         const parsed = parseSRT(text);
         setSubtitles(parsed);
+        console.log('Loaded', parsed.length, 'subtitle segments');
+      } else {
+        console.error('Failed to load subtitles:', response.status);
       }
     } catch (error) {
       console.error('Error loading subtitles:', error);
@@ -127,11 +156,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
 
   const loadNotes = async (url: string) => {
     try {
-      const fullUrl = url.startsWith('http') ? url : `${API_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+      // Build correct URL for notes file
+      const fullUrl = getVideoUrl(url) || url;
+      console.log('Loading notes from:', fullUrl);
       const response = await fetch(fullUrl);
       if (response.ok) {
         const text = await response.text();
         setNotes(text.split('\n'));
+        console.log('Loaded notes:', text.length, 'chars');
+      } else {
+        console.error('Failed to load notes:', response.status);
       }
     } catch (error) {
       console.error('Error loading notes:', error);
