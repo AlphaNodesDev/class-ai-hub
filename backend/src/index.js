@@ -405,16 +405,17 @@ const processJob = async (job) => {
           processed_video_url: `/processed/${path.basename(trimmedPath)}`
         });
         
-        // Dub
+        // Dub - the Python script creates the file with _dub_en suffix
+        const dubOutputPath = trimmedPath.replace('.mp4', '_dub_en.mp4');
         await runPythonScript('dub_to_english.py', [
           trimmedPath,
           '--model', 'small',
-          '--src_lang', job.language || 'ml'
+          '--src_lang', job.language || 'ml',
+          '--output', dubOutputPath
         ]);
         await updateVideoStatus(job.videoId, { dubbed: true });
-        const dubFilePath = trimmedPath.replace('.mp4', '_dub_en.mp4');
         await dbUpdate(`videos/${job.videoId}`, { 
-          dub_url: `/processed/${path.basename(dubFilePath)}`
+          dub_url: `/processed/${path.basename(dubOutputPath)}`
         });
         
         // OCR
