@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Video } from '@/lib/firebase';
+import { useQuestionGenerator, GeneratedQuestion } from '@/hooks/useQuestionGenerator';
 import {
   Play,
   Pause,
@@ -17,6 +18,9 @@ import {
   ChevronDown,
   Download,
   Search,
+  Loader2,
+  Sparkles,
+  AlertCircle,
 } from 'lucide-react';
 
 interface Subtitle {
@@ -25,25 +29,17 @@ interface Subtitle {
   text: string;
 }
 
-interface Question {
-  id: string;
-  text: string;
-  year: number;
-  timestamp: number;
-}
-
 interface VideoPlayerProps {
   video?: Video;
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [showSubtitles, setShowSubtitles] = useState(true);
   const [audioTrack, setAudioTrack] = useState<'original' | 'english'>('original');
@@ -52,68 +48,78 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   const [notes, setNotes] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [videoError, setVideoError] = useState<string | null>(null);
+  
+  const { questions, isGenerating, generateQuestions } = useQuestionGenerator();
 
-  // Mock questions - in real app, fetch from Firebase
-  const questions: Question[] = [
-    { id: '1', text: 'Explain the main concept with examples', year: 2023, timestamp: 120 },
-    { id: '2', text: 'Calculate the values in the given problem', year: 2022, timestamp: 300 },
-    { id: '3', text: 'Derive the formula from first principles', year: 2023, timestamp: 450 },
-  ];
+  // Build the correct video URL
+  const getVideoUrl = (videoPath?: string) => {
+    if (!videoPath) return null;
+    
+    // If already a full URL, return as-is
+    if (videoPath.startsWith('http://') || videoPath.startsWith('https://')) {
+      return videoPath;
+    }
+    
+    // If it's a relative path from backend, construct full URL
+    // The backend serves files from /processed, /uploads, etc.
+    const pathParts = videoPath.split('/');
+    const filename = pathParts[pathParts.length - 1];
+    
+    if (videoPath.includes('/processed/')) {
+      return `${API_URL}/processed/${filename}`;
+    }
+    if (videoPath.includes('/uploads/')) {
+      return `${API_URL}/uploads/${filename}`;
+    }
+    if (videoPath.includes('/recordings/')) {
+      return `${API_URL}/recordings/${filename}`;
+    }
+    
+    // Default: assume it's in processed folder
+    return `${API_URL}/processed/${filename}`;
+  };
+
+  const videoSrc = audioTrack === 'english' && video?.dub_url 
+    ? getVideoUrl(video.dub_url)
+    : getVideoUrl(video?.original_video_url || (video as any)?.processed_video_url);
 
   useEffect(() => {
-    // Load subtitles if available
+    // Load subtitles
     if (video?.subtitle_url) {
       loadSubtitles(video.subtitle_url);
     } else {
-      // Mock subtitles for demo
-      setSubtitles([
-        { start: 0, end: 5, text: 'Welcome to today\'s lecture.' },
-        { start: 5, end: 10, text: 'Today we will cover important concepts.' },
-        { start: 10, end: 15, text: 'Let\'s start with the fundamentals.' },
-        { start: 15, end: 20, text: 'This is key to understanding the topic.' },
-        { start: 20, end: 25, text: 'Now let\'s look at some examples.' },
-        { start: 25, end: 30, text: 'Here is the first example.' },
-        { start: 30, end: 35, text: 'Notice how we apply the formula.' },
-        { start: 35, end: 40, text: 'The result demonstrates the principle.' },
-        { start: 40, end: 45, text: 'Let\'s try another example.' },
-      ]);
+      setSubtitles([]);
     }
 
-    // Load notes if available
+    // Load notes
     if (video?.notes_url) {
       loadNotes(video.notes_url);
     } else {
-      // Mock notes
-      setNotes([
-        '## Key Concepts',
-        '- Main principle explained',
-        '- Formula: A = B × C',
-        '- Important variables:',
-        '  - A = Output value',
-        '  - B = Input factor',
-        '  - C = Constant coefficient',
-        '',
-        '## Examples',
-        '- Example 1: Basic calculation',
-        '- Example 2: Advanced application',
-        '',
-        '## Summary',
-        '- Key takeaways from the lecture',
-        '- Review the formulas',
-      ]);
+      setNotes([]);
     }
 
-    // Set initial duration
-    setDuration((video as any)?.duration || 2700);
-  }, [video]);
+    // Set duration from video data
+    if ((video as any)?.duration) {
+      setDuration((video as any).duration);
+    }
+
+    // Generate questions from topics
+    const topics = (video as any)?.topics || [];
+    if (topics.length > 0) {
+      generateQuestions('', topics);
+    }
+  }, [video, generateQuestions]);
 
   const loadSubtitles = async (url: string) => {
     try {
-      const response = await fetch(url);
-      const text = await response.text();
-      // Parse SRT format
-      const parsed = parseSRT(text);
-      setSubtitles(parsed);
+      const fullUrl = url.startsWith('http') ? url : `${API_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+      const response = await fetch(fullUrl);
+      if (response.ok) {
+        const text = await response.text();
+        const parsed = parseSRT(text);
+        setSubtitles(parsed);
+      }
     } catch (error) {
       console.error('Error loading subtitles:', error);
     }
@@ -121,9 +127,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
 
   const loadNotes = async (url: string) => {
     try {
-      const response = await fetch(url);
-      const text = await response.text();
-      setNotes(text.split('\n'));
+      const fullUrl = url.startsWith('http') ? url : `${API_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+      const response = await fetch(fullUrl);
+      if (response.ok) {
+        const text = await response.text();
+        setNotes(text.split('\n'));
+      }
     } catch (error) {
       console.error('Error loading notes:', error);
     }
@@ -135,10 +144,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
     let i = 0;
     
     while (i < lines.length) {
-      // Skip subtitle number
-      i++;
+      i++; // Skip subtitle number
       
-      // Parse timestamp
       const timeLine = lines[i];
       if (!timeLine) break;
       
@@ -153,7 +160,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
       
       i++;
       
-      // Collect text lines until empty line
       let text = '';
       while (i < lines.length && lines[i].trim() !== '') {
         text += (text ? ' ' : '') + lines[i];
@@ -163,7 +169,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
       if (text) {
         subtitles.push({ start, end, text });
       }
-      
       i++;
     }
     
@@ -197,19 +202,23 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
+      setVideoError(null);
     }
   };
 
+  const handleVideoError = () => {
+    setVideoError('Video file not available. Make sure the backend is running.');
+  };
+
   const togglePlay = () => {
-    if (videoRef.current) {
+    if (videoRef.current && videoSrc) {
       if (isPlaying) {
         videoRef.current.pause();
       } else {
-        videoRef.current.play().catch(() => {});
+        videoRef.current.play().catch(() => {
+          setVideoError('Cannot play video. Check if the file exists.');
+        });
       }
-      setIsPlaying(!isPlaying);
-    } else {
-      // Demo mode - toggle state
       setIsPlaying(!isPlaying);
     }
   };
@@ -238,35 +247,15 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   };
 
   const toggleFullscreen = () => {
-    if (videoRef.current) {
+    const container = videoRef.current?.parentElement;
+    if (container) {
       if (document.fullscreenElement) {
         document.exitFullscreen();
       } else {
-        videoRef.current.parentElement?.requestFullscreen();
+        container.requestFullscreen();
       }
     }
   };
-
-  // Simulate playback in demo mode
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isPlaying && !videoRef.current?.src) {
-      interval = setInterval(() => {
-        setCurrentTime(prev => {
-          if (prev >= duration) {
-            setIsPlaying(false);
-            return 0;
-          }
-          return prev + 1;
-        });
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [isPlaying, duration]);
-
-  const videoSrc = audioTrack === 'english' && video?.dub_url 
-    ? video.dub_url 
-    : video?.original_video_url;
 
   return (
     <div className="grid lg:grid-cols-3 gap-4">
@@ -274,42 +263,44 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
       <div className="lg:col-span-2 space-y-4">
         <Card className="overflow-hidden">
           <div className="relative bg-black aspect-video">
-            <video
-              ref={videoRef}
-              className="w-full h-full"
-              src={videoSrc}
-              onTimeUpdate={handleTimeUpdate}
-              onLoadedMetadata={handleLoadedMetadata}
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
-            />
-
-            {/* Video overlay for demo/loading state */}
-            {!videoSrc && (
-              <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-background/50 flex items-center justify-center">
+            {videoSrc ? (
+              <video
+                ref={videoRef}
+                className="w-full h-full"
+                src={videoSrc}
+                onTimeUpdate={handleTimeUpdate}
+                onLoadedMetadata={handleLoadedMetadata}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                onError={handleVideoError}
+                muted={isMuted}
+                playsInline
+              />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center bg-secondary/20">
                 <div className="text-center space-y-4">
-                  <div 
-                    className="w-20 h-20 rounded-full bg-primary/90 flex items-center justify-center mx-auto cursor-pointer hover:scale-110 transition-transform"
-                    onClick={togglePlay}
-                  >
-                    {isPlaying ? (
-                      <Pause className="w-8 h-8 text-primary-foreground" />
-                    ) : (
-                      <Play className="w-8 h-8 text-primary-foreground ml-1" />
-                    )}
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-semibold">{video?.subject || 'Lecture'}</h3>
-                    <p className="text-muted-foreground font-body">
-                      {(video as any)?.class_name || video?.class_id} • {(video as any)?.teacher_name || 'Teacher'}
-                    </p>
-                  </div>
+                  <AlertCircle className="w-12 h-12 text-muted-foreground mx-auto" />
+                  <p className="text-muted-foreground">No video file available</p>
+                  <p className="text-xs text-muted-foreground">Upload a video to get started</p>
+                </div>
+              </div>
+            )}
+
+            {/* Error overlay */}
+            {videoError && (
+              <div className="absolute inset-0 flex items-center justify-center bg-background/80">
+                <div className="text-center space-y-2 p-4">
+                  <AlertCircle className="w-10 h-10 text-destructive mx-auto" />
+                  <p className="text-sm text-muted-foreground">{videoError}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Backend URL: {API_URL}
+                  </p>
                 </div>
               </div>
             )}
 
             {/* Subtitles overlay */}
-            {showSubtitles && currentSubtitle && (
+            {showSubtitles && currentSubtitle && !videoError && (
               <div className="absolute bottom-20 left-0 right-0 px-4">
                 <div className="max-w-2xl mx-auto bg-background/80 backdrop-blur-sm px-4 py-2 rounded-lg text-center">
                   <p className="font-body">{currentSubtitle.text}</p>
@@ -324,24 +315,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                 <input
                   type="range"
                   min={0}
-                  max={duration}
+                  max={duration || 100}
                   value={currentTime}
                   onChange={handleSeek}
                   className="w-full h-1 bg-secondary rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:rounded-full"
                 />
-                {/* Subtitle markers */}
-                <div className="absolute top-0 left-0 right-0 h-1 pointer-events-none">
-                  {subtitles.map((sub, i) => (
-                    <div
-                      key={i}
-                      className="absolute h-full bg-primary/30"
-                      style={{
-                        left: `${(sub.start / duration) * 100}%`,
-                        width: `${((sub.end - sub.start) / duration) * 100}%`
-                      }}
-                    />
-                  ))}
-                </div>
               </div>
 
               <div className="flex items-center justify-between mt-3">
@@ -349,7 +327,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                   <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => skip(-10)}>
                     <SkipBack className="w-4 h-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-9 w-9" onClick={togglePlay}>
+                  <Button variant="ghost" size="icon" className="h-9 w-9" onClick={togglePlay} disabled={!videoSrc}>
                     {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
                   </Button>
                   <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => skip(10)}>
@@ -370,7 +348,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                     <Subtitles className="w-4 h-4" />
                   </Button>
 
-                  {/* Audio track selector */}
                   {video?.dub_url && (
                     <div className="relative">
                       <Button
@@ -384,13 +361,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                         <ChevronDown className="w-3 h-3" />
                       </Button>
                       {showSettings && (
-                        <div className="absolute bottom-full mb-2 right-0 w-44 bg-popover border border-border rounded-lg shadow-card p-2 animate-fade-in">
+                        <div className="absolute bottom-full mb-2 right-0 w-44 bg-popover border border-border rounded-lg shadow-lg p-2 z-10">
                           <p className="text-xs text-muted-foreground px-2 pb-2 font-body">Audio Track</p>
                           <button
                             className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === 'original' ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
                             onClick={() => { setAudioTrack('original'); setShowSettings(false); }}
                           >
-                            Malayalam (Original)
+                            Original
                           </button>
                           <button
                             className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === 'english' ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
@@ -426,11 +403,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
               <span>{(video as any)?.teacher_name || 'Teacher'}</span>
               <span>•</span>
               <span>{video?.date ? new Date(video.date).toLocaleDateString() : 'Today'}</span>
-              <span>•</span>
-              <span>{formatTime(duration)}</span>
+              {duration > 0 && (
+                <>
+                  <span>•</span>
+                  <span>{formatTime(duration)}</span>
+                </>
+              )}
             </div>
             
-            {/* AI-detected topics */}
             {(video as any)?.topics?.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-4">
                 <span className="text-xs text-muted-foreground">Topics:</span>
@@ -469,7 +449,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
 
         {/* Tab Content */}
         <Card className="h-[500px] overflow-hidden flex flex-col">
-          {/* Search bar for subtitles */}
           {activeTab === 'subtitles' && (
             <div className="p-3 border-b border-border">
               <div className="flex items-center gap-2 px-3 py-1.5 bg-secondary rounded-lg">
@@ -488,51 +467,60 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
           <CardContent className="p-4 flex-1 overflow-y-auto">
             {activeTab === 'subtitles' && (
               <div className="space-y-2">
-                {filteredSubtitles.map((sub, index) => (
-                  <div
-                    key={index}
-                    onClick={() => jumpToTime(sub.start)}
-                    className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                      currentSubtitle === sub ? 'bg-primary/10 border border-primary/30' : 'bg-secondary/50 hover:bg-secondary'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-primary font-medium font-body font-mono">
-                        {formatTime(sub.start)}
-                      </span>
+                {filteredSubtitles.length === 0 ? (
+                  <p className="text-center text-muted-foreground py-8 text-sm">
+                    {subtitles.length === 0 ? 'No subtitles available' : 'No matches found'}
+                  </p>
+                ) : (
+                  filteredSubtitles.map((sub, index) => (
+                    <div
+                      key={index}
+                      onClick={() => jumpToTime(sub.start)}
+                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                        currentSubtitle === sub ? 'bg-primary/10 border border-primary/30' : 'bg-secondary/50 hover:bg-secondary'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs text-primary font-medium font-mono">
+                          {formatTime(sub.start)}
+                        </span>
+                      </div>
+                      <p className="text-sm font-body">{sub.text}</p>
                     </div>
-                    <p className="text-sm font-body">{sub.text}</p>
-                  </div>
-                ))}
-                {filteredSubtitles.length === 0 && searchQuery && (
-                  <p className="text-center text-muted-foreground py-8">No matches found</p>
+                  ))
                 )}
               </div>
             )}
 
             {activeTab === 'notes' && (
               <div className="space-y-2">
-                {notes.map((line, index) => (
-                  <p 
-                    key={index} 
-                    className={`font-body ${
-                      line.startsWith('## ') 
-                        ? 'font-semibold text-lg mt-4 text-foreground' 
-                        : line.startsWith('- ') 
-                          ? 'text-muted-foreground pl-4'
-                          : 'text-muted-foreground'
-                    }`}
-                  >
-                    {line.replace(/^## /, '').replace(/^- /, '• ')}
+                {notes.length === 0 ? (
+                  <p className="text-center text-muted-foreground py-8 text-sm">
+                    No notes available yet
                   </p>
-                ))}
+                ) : (
+                  notes.map((line, index) => (
+                    <p 
+                      key={index} 
+                      className={`font-body ${
+                        line.startsWith('## ') 
+                          ? 'font-semibold text-lg mt-4 text-foreground' 
+                          : line.startsWith('- ') 
+                            ? 'text-muted-foreground pl-4'
+                            : 'text-muted-foreground'
+                      }`}
+                    >
+                      {line.replace(/^## /, '').replace(/^- /, '• ')}
+                    </p>
+                  ))
+                )}
                 
                 {video?.notes_url && (
                   <Button 
                     variant="outline" 
                     size="sm" 
                     className="mt-4 w-full"
-                    onClick={() => window.open(`${API_URL}/video/${video.id}/notes/pdf`, '_blank')}
+                    onClick={() => window.open(`${API_URL}/api/video/${video.id}/notes/pdf`, '_blank')}
                   >
                     <Download className="w-4 h-4 mr-2" />
                     Download PDF
@@ -543,20 +531,44 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
 
             {activeTab === 'questions' && (
               <div className="space-y-3">
-                {questions.map((q) => (
-                  <div
-                    key={q.id}
-                    onClick={() => jumpToTime(q.timestamp)}
-                    className="p-3 rounded-lg bg-secondary/50 hover:bg-secondary cursor-pointer transition-colors"
-                  >
-                    <p className="text-sm font-body">{q.text}</p>
-                    <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground font-body">
-                      <span>Year: {q.year}</span>
-                      <span>•</span>
-                      <span className="text-primary font-mono">Jump to {formatTime(q.timestamp)}</span>
-                    </div>
+                {isGenerating ? (
+                  <div className="flex items-center justify-center py-8 gap-2">
+                    <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                    <span className="text-sm text-muted-foreground">Generating questions...</span>
                   </div>
-                ))}
+                ) : questions.length === 0 ? (
+                  <div className="text-center py-8">
+                    <Sparkles className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+                    <p className="text-sm text-muted-foreground">
+                      Questions will be generated from video topics
+                    </p>
+                  </div>
+                ) : (
+                  questions.map((q) => (
+                    <div
+                      key={q.id}
+                      onClick={() => q.timestamp && jumpToTime(q.timestamp)}
+                      className="p-3 rounded-lg bg-secondary/50 hover:bg-secondary cursor-pointer transition-colors"
+                    >
+                      <p className="text-sm font-body">{q.text}</p>
+                      <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground font-body">
+                        <span className={`px-1.5 py-0.5 rounded ${
+                          q.difficulty === 'easy' ? 'bg-green-500/20 text-green-500' :
+                          q.difficulty === 'medium' ? 'bg-amber-500/20 text-amber-500' :
+                          'bg-red-500/20 text-red-500'
+                        }`}>
+                          {q.difficulty}
+                        </span>
+                        <span>{q.topic}</span>
+                        {q.timestamp && (
+                          <span className="text-primary font-mono">
+                            @ {formatTime(q.timestamp)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             )}
           </CardContent>
