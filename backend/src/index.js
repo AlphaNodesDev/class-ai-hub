@@ -892,6 +892,61 @@ app.get('/api/video/:id/status', async (req, res) => {
   }
 });
 
+// Delete video
+app.delete('/api/video/:id', async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    const video = await dbGet(`videos/${id}`);
+    
+    if (!video) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+    
+    // Delete video files from disk
+    const filesToDelete = [
+      video.original_video_url,
+      video.processed_video_url,
+      video.dub_url,
+      video.subtitle_url,
+      video.notes_url,
+      video.notes_pdf_url,
+      video.questions_url
+    ].filter(Boolean);
+    
+    for (const filePath of filesToDelete) {
+      try {
+        // Extract filename and try to delete from various folders
+        const filename = path.basename(filePath.replace(/\\/g, '/'));
+        const possiblePaths = [
+          path.join(UPLOAD_DIR, filename),
+          path.join(PROCESSED_DIR, filename),
+          path.join(NOTES_DIR, filename),
+          path.join(RECORDINGS_DIR, filename)
+        ];
+        
+        for (const p of possiblePaths) {
+          if (fs.existsSync(p)) {
+            fs.unlinkSync(p);
+            console.log(`🗑️ Deleted file: ${p}`);
+          }
+        }
+      } catch (err) {
+        console.error(`Failed to delete file: ${filePath}`, err.message);
+      }
+    }
+    
+    // Delete from Firebase
+    await dbSet(`videos/${id}`, null);
+    
+    console.log(`✅ Video ${id} deleted`);
+    res.json({ success: true, message: 'Video deleted' });
+  } catch (error) {
+    console.error('Delete error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get all videos
 app.get('/api/videos', async (req, res) => {
   const { classId, teacherId } = req.query;

@@ -3,7 +3,7 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { dbGet, dbListen, Video, ClassInfo } from '@/lib/firebase';
+import { dbGet, dbListen, dbRemove, Video, ClassInfo } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import VideoPlayer from '@/components/video/VideoPlayer';
@@ -23,6 +23,7 @@ import {
   BookOpen,
   StopCircle,
   Download,
+  Trash2,
 } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
@@ -270,6 +271,31 @@ const TeacherDashboard: React.FC = () => {
     return progress;
   };
 
+  const handleDeleteVideo = async (videoId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    if (!confirm('Are you sure you want to delete this video? This action cannot be undone.')) {
+      return;
+    }
+    
+    try {
+      // Delete from Firebase
+      await dbRemove(`videos/${videoId}`);
+      
+      // Also try to delete files from backend
+      try {
+        await fetch(`${API_URL}/video/${videoId}`, { method: 'DELETE' });
+      } catch {
+        // Backend delete is optional - Firebase delete is the main one
+      }
+      
+      toast.success('Video deleted successfully');
+    } catch (error) {
+      console.error('Error deleting video:', error);
+      toast.error('Failed to delete video');
+    }
+  };
+
   if (selectedVideo) {
     return (
       <DashboardLayout title="Video Player" subtitle={`${selectedVideo.subject} - ${selectedVideo.date}`}>
@@ -460,11 +486,23 @@ const TeacherDashboard: React.FC = () => {
                         <Button 
                           variant="ghost" 
                           size="sm"
-                          onClick={() => window.open(`${API_URL}/video/${video.id}/notes/pdf`, '_blank')}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.open(`${API_URL}/video/${video.id}/notes/pdf`, '_blank');
+                          }}
                         >
                           <Download className="w-4 h-4" />
                         </Button>
                       )}
+                      
+                      <Button 
+                        variant="ghost" 
+                        size="sm"
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={(e) => handleDeleteVideo(video.id, e)}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
                     </div>
                   </div>
                 ))}
