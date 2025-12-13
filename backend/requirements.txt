@@ -1,19 +1,23 @@
 # Class360 Backend Dependencies
 
-# Whisper for transcription
+# Whisper for transcription (local AI)
 openai-whisper>=20231117
 
-# Text-to-Speech
-gtts>=2.5.0
+# Coqui TTS - Neural Text-to-Speech (local AI)
+TTS>=0.22.0
 
 # Video processing
 ffmpeg-python>=0.2.0
 
-# OCR
+# EasyOCR - AI-based OCR (local, multilingual)
+easyocr>=1.7.0
+
+# OpenCV for video processing
 opencv-python>=4.8.0
-pytesseract>=0.3.10
 Pillow>=10.0.0
 numpy>=1.24.0
 
 # Utilities
 pathlib2>=2.3.7
+torch>=2.0.0
+torchaudio>=2.0.0
