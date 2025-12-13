@@ -166,9 +166,9 @@ def main():
     print("=" * 60)
     
     # Pre-load the OCR model
-    print("\n📦 Loading AI OCR model...")
+    print("\n[*] Loading AI OCR model...")
     get_reader(args.languages)
-    print("   ✓ Model loaded")
+    print("   [OK] Model loaded")
     
     # Open video
     cap = cv2.VideoCapture(str(input_path))
@@ -181,7 +181,7 @@ def main():
     duration = total_frames / fps if fps > 0 else 0
     frame_interval = int(fps * args.interval)
     
-    print(f"\n📹 Video Info:")
+    print(f"\n[VIDEO] Info:")
     print(f"   FPS: {fps:.2f}")
     print(f"   Duration: {duration:.1f}s ({duration/60:.1f} min)")
     print(f"   Processing every {args.interval}s...")
@@ -191,7 +191,7 @@ def main():
     frame_count = 0
     processed_count = 0
     
-    print("\n🔍 Extracting text from frames...")
+    print("\n[SCAN] Extracting text from frames...")
     
     while True:
         ret, frame = cap.read()
@@ -217,7 +217,7 @@ def main():
                         'text': cleaned
                     })
                     prev_text = text
-                    print(f" ✓ Found {len(cleaned)} chars")
+                    print(f" [OK] Found {len(cleaned)} chars")
                     
                     if args.save_frames:
                         frame_path = frames_dir / f"frame_{time_str.replace(':', '-')}.jpg"
@@ -234,22 +234,22 @@ def main():
     cap.release()
     
     # Generate markdown output
-    print(f"\n📝 Generating notes document...")
+    print(f"\n[WRITE] Generating notes document...")
     
     with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(f"# 📚 Board Notes: {input_path.stem}\n\n")
+        f.write(f"# Board Notes: {input_path.stem}\n\n")
         f.write(f"*Auto-extracted using Class360 AI OCR (EasyOCR)*\n\n")
         f.write(f"**Video Duration:** {duration/60:.1f} minutes\n\n")
         f.write("---\n\n")
         
         if extracted_notes:
             for i, note in enumerate(extracted_notes, 1):
-                f.write(f"## 📌 Section {i} [{note['timestamp']}]\n\n")
+                f.write(f"## Section {i} [{note['timestamp']}]\n\n")
                 f.write(f"{note['text']}\n\n")
                 f.write("---\n\n")
             
             # Add combined summary at the end
-            f.write("## 📋 All Extracted Content\n\n")
+            f.write("## All Extracted Content\n\n")
             all_text = '\n\n'.join([note['text'] for note in extracted_notes])
             f.write(all_text)
         else:
@@ -257,7 +257,7 @@ def main():
             f.write("\n*Tip: Make sure the video has visible text on screen or whiteboard.*\n")
     
     print(f"\n" + "=" * 60)
-    print(f"✅ Extraction Complete!")
+    print(f"[DONE] Extraction Complete!")
     print(f"   Processed: {processed_count} frames")
     print(f"   Extracted: {len(extracted_notes)} note sections")
     print(f"   Output: {output_path}")
