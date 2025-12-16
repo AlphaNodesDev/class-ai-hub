@@ -109,6 +109,68 @@ let isProcessing = false;
 // Active camera recordings
 const activeRecordings = new Map();
 
+// Processing progress tracking
+const processingProgress = new Map(); // videoId -> ProcessingStatus
+const progressListeners = new Map(); // videoId -> Set<response>
+
+// Initialize processing status
+const initProcessingStatus = (videoId, videoName) => {
+  const status = {
+    videoId,
+    videoName,
+    overallProgress: 0,
+    currentStep: 'initializing',
+    steps: [
+      { id: 'trim', name: 'Trimming Video', status: 'pending', progress: 0 },
+      { id: 'subtitles', name: 'Generating Subtitles', status: 'pending', progress: 0 },
+      { id: 'dub', name: 'Creating Audio Dubs', status: 'pending', progress: 0 },
+      { id: 'ocr', name: 'Extracting Board Notes', status: 'pending', progress: 0 },
+      { id: 'analyze', name: 'AI Analysis', status: 'pending', progress: 0 },
+    ],
+    startedAt: new Date().toISOString(),
+    estimatedTimeRemaining: null,
+  };
+  processingProgress.set(videoId, status);
+  return status;
+};
+
+// Update processing step
+const updateProcessingStep = (videoId, stepId, updates) => {
+  const status = processingProgress.get(videoId);
+  if (!status) return;
+
+  const stepIndex = status.steps.findIndex(s => s.id === stepId);
+  if (stepIndex >= 0) {
+    status.steps[stepIndex] = { ...status.steps[stepIndex], ...updates };
+  }
+
+  // Calculate overall progress
+  const completedSteps = status.steps.filter(s => s.status === 'completed').length;
+  const processingStep = status.steps.find(s => s.status === 'processing');
+  const stepProgress = processingStep?.progress || 0;
+  
+  status.overallProgress = ((completedSteps + stepProgress / 100) / status.steps.length) * 100;
+  status.currentStep = processingStep?.name || 'Processing';
+
+  // Broadcast update to all listeners
+  broadcastProgress(videoId, status);
+};
+
+// Broadcast progress to SSE clients
+const broadcastProgress = (videoId, status) => {
+  const listeners = progressListeners.get(videoId);
+  if (listeners) {
+    const data = JSON.stringify(status);
+    listeners.forEach(res => {
+      try {
+        res.write(`data: ${data}\n\n`);
+      } catch (err) {
+        // Client disconnected
+      }
+    });
+  }
+};
+
 // ============= HELPER FUNCTIONS =============
 
 const dbGet = async (path) => {
@@ -375,98 +437,152 @@ const processJob = async (job) => {
         break;
         
       case 'full_pipeline':
+        // Initialize progress tracking
+        const videoName = path.basename(job.inputPath);
+        initProcessingStatus(job.videoId, videoName);
+        
         // Run complete pipeline
         const baseName = path.basename(job.inputPath, path.extname(job.inputPath));
         const trimmedPath = path.join(PROCESSED_DIR, `${baseName}_trimmed.mp4`);
         
-        // Trim (if needed)
-        if (job.startTrim || job.endTrim) {
-          await runPythonScript('trim_video.py', [
-            job.inputPath,
-            '--start_trim', String(job.startTrim || 0),
-            '--end_trim', String(job.endTrim || 0),
-            '--output', trimmedPath
-          ]);
-          await updateVideoStatus(job.videoId, { trimmed: true });
-        } else {
-          fs.copyFileSync(job.inputPath, trimmedPath);
+        // Step 1: Trim
+        updateProcessingStep(job.videoId, 'trim', { status: 'processing', progress: 0, message: 'Starting video trimming...' });
+        try {
+          if (job.startTrim || job.endTrim) {
+            updateProcessingStep(job.videoId, 'trim', { progress: 30, message: 'Trimming start and end...' });
+            await runPythonScript('trim_video.py', [
+              job.inputPath,
+              '--start_trim', String(job.startTrim || 0),
+              '--end_trim', String(job.endTrim || 0),
+              '--output', trimmedPath
+            ]);
+            await updateVideoStatus(job.videoId, { trimmed: true });
+          } else {
+            updateProcessingStep(job.videoId, 'trim', { progress: 50, message: 'Copying video...' });
+            fs.copyFileSync(job.inputPath, trimmedPath);
+          }
+          updateProcessingStep(job.videoId, 'trim', { status: 'completed', progress: 100 });
+        } catch (err) {
+          updateProcessingStep(job.videoId, 'trim', { status: 'failed', message: err.message });
+          throw err;
         }
         
-        // Subtitles - Generate ALL languages (original + English + Malayalam)
-        await runPythonScript('generate_subtitles.py', [
-          trimmedPath,
-          '--model', 'medium',  // Use medium for better accuracy
-          '--language', job.language || 'ml',
-          '--all_languages'  // Generate original, English, and Malayalam subtitles
-        ]);
-        await updateVideoStatus(job.videoId, { subtitles: true });
-        
-        // Determine subtitle paths based on detected language
-        const lang = job.language || 'ml';
-        const originalSrtPath = lang === 'en' 
-          ? trimmedPath.replace('.mp4', '.srt')
-          : trimmedPath.replace('.mp4', `_${lang}.srt`);
-        const englishSrtPath = trimmedPath.replace('.mp4', '_en.srt');
-        const malayalamSrtPath = trimmedPath.replace('.mp4', '_ml.srt');
-        
-        await dbUpdate(`videos/${job.videoId}`, { 
-          subtitle_url: `/processed/${path.basename(originalSrtPath)}`,
-          subtitle_en_url: `/processed/${path.basename(englishSrtPath)}`,
-          subtitle_ml_url: `/processed/${path.basename(malayalamSrtPath)}`,
-          processed_video_url: `/processed/${path.basename(trimmedPath)}`
-        });
-        
-        // Dub - Generate ALL language dubs with embedded audio tracks
-        const dubOutputPath = trimmedPath.replace('.mp4', '_dubbed.mp4');
-        await runPythonScript('dub_video.py', [
-          trimmedPath,
-          '--model', 'medium',  // Use medium for better accuracy
-          '--src_lang', job.language || 'ml',
-          '--all_dubs',  // Generate English AND Malayalam dubs
-          '--embed_tracks',  // Embed all audio tracks in single video
-          '--output', dubOutputPath
-        ]);
-        await updateVideoStatus(job.videoId, { dubbed: true });
-        await dbUpdate(`videos/${job.videoId}`, { 
-          dub_url: `/processed/${path.basename(dubOutputPath)}`
-        });
-        
-        // OCR
-        const notesPath = path.join(NOTES_DIR, `${job.videoId}_notes.md`);
-        await runPythonScript('extract_board_notes.py', [
-          trimmedPath,
-          '--output', notesPath,
-          '--interval', '30'
-        ]);
-        await updateVideoStatus(job.videoId, { ocr_notes: true });
-        
-        // Generate PDF notes
-        const pdfNotesPath = await generatePdfNotes(notesPath, notesPath.replace('.md', '.pdf'));
-        await dbUpdate(`videos/${job.videoId}`, { 
-          notes_url: `/notes/${path.basename(notesPath)}`,
-          notes_pdf_url: pdfNotesPath ? `/notes/${path.basename(pdfNotesPath)}` : null
-        });
-        
-        // Generate AI Questions from transcript
-        const transcriptPath = trimmedPath.replace('.mp4', '.txt');
-        const questionsPath = path.join(NOTES_DIR, `${job.videoId}_questions.json`);
-        if (fs.existsSync(transcriptPath)) {
-          await runPythonScript('generate_questions.py', [
-            transcriptPath,
-            '--output', questionsPath,
-            '--num_questions', '10'
+        // Step 2: Subtitles
+        updateProcessingStep(job.videoId, 'subtitles', { status: 'processing', progress: 0, message: 'Loading Whisper model...' });
+        try {
+          updateProcessingStep(job.videoId, 'subtitles', { progress: 20, message: 'Transcribing audio...' });
+          await runPythonScript('generate_subtitles.py', [
+            trimmedPath,
+            '--model', 'medium',
+            '--language', job.language || 'ml',
+            '--all_languages'
           ]);
+          updateProcessingStep(job.videoId, 'subtitles', { progress: 80, message: 'Translating subtitles...' });
+          await updateVideoStatus(job.videoId, { subtitles: true });
+          
+          const lang = job.language || 'ml';
+          const originalSrtPath = lang === 'en' 
+            ? trimmedPath.replace('.mp4', '.srt')
+            : trimmedPath.replace('.mp4', `_${lang}.srt`);
+          const englishSrtPath = trimmedPath.replace('.mp4', '_en.srt');
+          const malayalamSrtPath = trimmedPath.replace('.mp4', '_ml.srt');
+          
           await dbUpdate(`videos/${job.videoId}`, { 
-            questions_url: `/notes/${path.basename(questionsPath)}`
+            subtitle_url: `/processed/${path.basename(originalSrtPath)}`,
+            subtitle_en_url: `/processed/${path.basename(englishSrtPath)}`,
+            subtitle_ml_url: `/processed/${path.basename(malayalamSrtPath)}`,
+            processed_video_url: `/processed/${path.basename(trimmedPath)}`
           });
+          updateProcessingStep(job.videoId, 'subtitles', { status: 'completed', progress: 100 });
+        } catch (err) {
+          updateProcessingStep(job.videoId, 'subtitles', { status: 'failed', message: err.message });
+          throw err;
         }
         
-        // AI analysis
-        const videoAnalysis = await analyzeVideoContent(trimmedPath);
-        await dbUpdate(`videos/${job.videoId}`, { 
-          topics: videoAnalysis.topics,
-          ai_summary: videoAnalysis.summary 
-        });
+        // Step 3: Dubbing
+        updateProcessingStep(job.videoId, 'dub', { status: 'processing', progress: 0, message: 'Loading TTS models...' });
+        try {
+          updateProcessingStep(job.videoId, 'dub', { progress: 20, message: 'Generating English dub...' });
+          const dubOutputPath = trimmedPath.replace('.mp4', '_dubbed.mp4');
+          await runPythonScript('dub_video.py', [
+            trimmedPath,
+            '--model', 'medium',
+            '--src_lang', job.language || 'ml',
+            '--all_dubs',
+            '--embed_tracks',
+            '--output', dubOutputPath
+          ]);
+          updateProcessingStep(job.videoId, 'dub', { progress: 80, message: 'Embedding audio tracks...' });
+          await updateVideoStatus(job.videoId, { dubbed: true });
+          await dbUpdate(`videos/${job.videoId}`, { 
+            dub_url: `/processed/${path.basename(dubOutputPath)}`
+          });
+          updateProcessingStep(job.videoId, 'dub', { status: 'completed', progress: 100 });
+        } catch (err) {
+          updateProcessingStep(job.videoId, 'dub', { status: 'failed', message: err.message });
+          // Continue with OCR even if dubbing fails
+          console.error('Dubbing failed, continuing with OCR:', err.message);
+        }
+        
+        // Step 4: OCR
+        updateProcessingStep(job.videoId, 'ocr', { status: 'processing', progress: 0, message: 'Extracting frames...' });
+        try {
+          updateProcessingStep(job.videoId, 'ocr', { progress: 30, message: 'Running OCR on frames...' });
+          const notesPath = path.join(NOTES_DIR, `${job.videoId}_notes.md`);
+          await runPythonScript('extract_board_notes.py', [
+            trimmedPath,
+            '--output', notesPath,
+            '--interval', '30'
+          ]);
+          updateProcessingStep(job.videoId, 'ocr', { progress: 70, message: 'Generating PDF notes...' });
+          await updateVideoStatus(job.videoId, { ocr_notes: true });
+          
+          const pdfNotesPath = await generatePdfNotes(notesPath, notesPath.replace('.md', '.pdf'));
+          await dbUpdate(`videos/${job.videoId}`, { 
+            notes_url: `/notes/${path.basename(notesPath)}`,
+            notes_pdf_url: pdfNotesPath ? `/notes/${path.basename(pdfNotesPath)}` : null
+          });
+          updateProcessingStep(job.videoId, 'ocr', { status: 'completed', progress: 100 });
+        } catch (err) {
+          updateProcessingStep(job.videoId, 'ocr', { status: 'failed', message: err.message });
+        }
+        
+        // Step 5: AI Analysis
+        updateProcessingStep(job.videoId, 'analyze', { status: 'processing', progress: 0, message: 'Analyzing content...' });
+        try {
+          updateProcessingStep(job.videoId, 'analyze', { progress: 30, message: 'Extracting topics...' });
+          const transcriptPath = trimmedPath.replace('.mp4', '.txt');
+          const questionsPath = path.join(NOTES_DIR, `${job.videoId}_questions.json`);
+          if (fs.existsSync(transcriptPath)) {
+            updateProcessingStep(job.videoId, 'analyze', { progress: 50, message: 'Generating quiz questions...' });
+            await runPythonScript('generate_questions.py', [
+              transcriptPath,
+              '--output', questionsPath,
+              '--num_questions', '10'
+            ]);
+            await dbUpdate(`videos/${job.videoId}`, { 
+              questions_url: `/notes/${path.basename(questionsPath)}`
+            });
+          }
+          
+          updateProcessingStep(job.videoId, 'analyze', { progress: 80, message: 'Running AI analysis...' });
+          const videoAnalysis = await analyzeVideoContent(trimmedPath);
+          await dbUpdate(`videos/${job.videoId}`, { 
+            topics: videoAnalysis.topics,
+            ai_summary: videoAnalysis.summary 
+          });
+          updateProcessingStep(job.videoId, 'analyze', { status: 'completed', progress: 100 });
+        } catch (err) {
+          updateProcessingStep(job.videoId, 'analyze', { status: 'failed', message: err.message });
+        }
+        
+        // Mark overall as complete
+        const finalStatus = processingProgress.get(job.videoId);
+        if (finalStatus) {
+          finalStatus.overallProgress = 100;
+          finalStatus.currentStep = 'Complete';
+          broadcastProgress(job.videoId, finalStatus);
+        }
         break;
     }
     
@@ -1228,6 +1344,63 @@ app.post('/api/users/:userId/assign', async (req, res) => {
   }
 });
 
+// ============= PROCESSING PROGRESS ENDPOINTS =============
+
+// SSE endpoint for real-time progress updates
+app.get('/api/processing/progress/:videoId', (req, res) => {
+  const { videoId } = req.params;
+  
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  // Add this response to listeners
+  if (!progressListeners.has(videoId)) {
+    progressListeners.set(videoId, new Set());
+  }
+  progressListeners.get(videoId).add(res);
+
+  // Send current status immediately if exists
+  const currentStatus = processingProgress.get(videoId);
+  if (currentStatus) {
+    res.write(`data: ${JSON.stringify(currentStatus)}\n\n`);
+  }
+
+  // Remove listener on disconnect
+  req.on('close', () => {
+    const listeners = progressListeners.get(videoId);
+    if (listeners) {
+      listeners.delete(res);
+      if (listeners.size === 0) {
+        progressListeners.delete(videoId);
+      }
+    }
+  });
+});
+
+// Get current processing status
+app.get('/api/processing/status/:videoId', (req, res) => {
+  const { videoId } = req.params;
+  const status = processingProgress.get(videoId);
+  
+  if (status) {
+    res.json(status);
+  } else {
+    res.status(404).json({ error: 'No processing status found' });
+  }
+});
+
+// Get all active processing jobs
+app.get('/api/processing/active', (req, res) => {
+  const activeJobs = Array.from(processingProgress.values()).filter(
+    status => status.overallProgress < 100
+  );
+  res.json(activeJobs);
+});
+
 // Serve processed files
 app.use('/processed', express.static(PROCESSED_DIR));
 app.use('/uploads', express.static(UPLOAD_DIR));
@@ -1249,6 +1422,11 @@ app.listen(PORT, () => {
 ║   • GET  /api/video/:id/status      - Get video status                ║
 ║   • GET  /api/videos                - List all videos                 ║
 ║   • GET  /api/video/:id/notes/pdf   - Download notes as PDF           ║
+║                                                                       ║
+║   PROCESSING PROGRESS ENDPOINTS:                                      ║
+║   • GET  /api/processing/progress/:id - SSE progress stream           ║
+║   • GET  /api/processing/status/:id   - Current status                ║
+║   • GET  /api/processing/active       - All active jobs               ║
 ║                                                                       ║
 ║   CAMERA ENDPOINTS:                                                   ║
 ║   • POST /api/camera/:classId/start - Start camera recording          ║
