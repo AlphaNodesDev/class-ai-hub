@@ -1,23 +1,30 @@
 # Class360 Backend Dependencies
+# =============================
 
-# Whisper for transcription (local AI)
-openai-whisper>=20231117
+# Core AI - Speech Recognition
+openai-whisper>=20231117     # Whisper for transcription/translation
+torch>=2.0.0                 # PyTorch (GPU support)
+torchaudio>=2.0.0            # Audio processing
 
-# Coqui TTS - Neural Text-to-Speech (local AI)
-TTS>=0.22.0
+# Text-to-Speech (TTS)
+TTS>=0.22.0                  # Coqui TTS - Neural voice synthesis
+gtts>=2.3.0                  # Google TTS fallback
 
-# Video processing
-ffmpeg-python>=0.2.0
+# OCR (Optical Character Recognition)
+easyocr>=1.7.0               # Multi-language OCR with handwriting support
 
-# EasyOCR - AI-based OCR (local, multilingual)
-easyocr>=1.7.0
+# Audio/Video Processing
+ffmpeg-python>=0.2.0         # FFmpeg wrapper
+pydub>=0.25.0                # Audio manipulation
 
-# OpenCV for video processing
-opencv-python>=4.8.0
-Pillow>=10.0.0
-numpy>=1.24.0
+# Computer Vision
+opencv-python>=4.8.0         # Video/image processing
+numpy>=1.24.0                # Numerical operations
+Pillow>=10.0.0               # Image processing
 
 # Utilities
-pathlib2>=2.3.7
-torch>=2.0.0
-torchaudio>=2.0.0
+pathlib2>=2.3.7              # Path utilities
+
+# Optional: Local AI for note processing
+# Install with: pip install ollama
+# Then run: ollama pull llama3.2:1b
