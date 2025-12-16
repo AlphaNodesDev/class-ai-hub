@@ -392,25 +392,38 @@ const processJob = async (job) => {
           fs.copyFileSync(job.inputPath, trimmedPath);
         }
         
-        // Subtitles
+        // Subtitles - Generate ALL languages (original + English + Malayalam)
         await runPythonScript('generate_subtitles.py', [
           trimmedPath,
-          '--model', 'small',
-          '--language', job.language || 'ml'
+          '--model', 'medium',  // Use medium for better accuracy
+          '--language', job.language || 'ml',
+          '--all_languages'  // Generate original, English, and Malayalam subtitles
         ]);
         await updateVideoStatus(job.videoId, { subtitles: true });
-        const srtFilePath = trimmedPath.replace('.mp4', '.srt');
+        
+        // Determine subtitle paths based on detected language
+        const lang = job.language || 'ml';
+        const originalSrtPath = lang === 'en' 
+          ? trimmedPath.replace('.mp4', '.srt')
+          : trimmedPath.replace('.mp4', `_${lang}.srt`);
+        const englishSrtPath = trimmedPath.replace('.mp4', '_en.srt');
+        const malayalamSrtPath = trimmedPath.replace('.mp4', '_ml.srt');
+        
         await dbUpdate(`videos/${job.videoId}`, { 
-          subtitle_url: `/processed/${path.basename(srtFilePath)}`,
+          subtitle_url: `/processed/${path.basename(originalSrtPath)}`,
+          subtitle_en_url: `/processed/${path.basename(englishSrtPath)}`,
+          subtitle_ml_url: `/processed/${path.basename(malayalamSrtPath)}`,
           processed_video_url: `/processed/${path.basename(trimmedPath)}`
         });
         
-        // Dub - the Python script creates the file with _dub_en suffix
-        const dubOutputPath = trimmedPath.replace('.mp4', '_dub_en.mp4');
-        await runPythonScript('dub_to_english.py', [
+        // Dub - Generate ALL language dubs with embedded audio tracks
+        const dubOutputPath = trimmedPath.replace('.mp4', '_dubbed.mp4');
+        await runPythonScript('dub_video.py', [
           trimmedPath,
-          '--model', 'small',
+          '--model', 'medium',  // Use medium for better accuracy
           '--src_lang', job.language || 'ml',
+          '--all_dubs',  // Generate English AND Malayalam dubs
+          '--embed_tracks',  // Embed all audio tracks in single video
           '--output', dubOutputPath
         ]);
         await updateVideoStatus(job.videoId, { dubbed: true });
