@@ -10,6 +10,12 @@ torchaudio>=2.0.0            # Audio processing
 TTS>=0.22.0                  # Coqui TTS - Neural voice synthesis
 gtts>=2.3.0                  # Google TTS fallback
 
+# Translation & Multi-language TTS
+transformers>=4.33.0         # Hugging Face for MMS-TTS Malayalam & translation
+sentencepiece>=0.1.99        # Required for translation models
+accelerate>=0.21.0           # Faster model loading
+scipy>=1.11.0                # Audio file I/O for MMS-TTS
+
 # OCR (Optical Character Recognition)
 easyocr>=1.7.0               # Multi-language OCR with handwriting support
 

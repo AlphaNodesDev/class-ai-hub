@@ -42,13 +42,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const [duration, setDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [showSubtitles, setShowSubtitles] = useState(true);
-  const [audioTrack, setAudioTrack] = useState<'original' | 'english'>('original');
+  const [audioTrack, setAudioTrack] = useState<number>(0); // Track index: 0=original, 1=english, 2=malayalam
   const [showSettings, setShowSettings] = useState(false);
+  const [showSubtitleLang, setShowSubtitleLang] = useState(false);
+  const [subtitleLang, setSubtitleLang] = useState<'original' | 'en' | 'ml'>('original');
   const [activeTab, setActiveTab] = useState<'subtitles' | 'notes' | 'questions'>('subtitles');
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   const [notes, setNotes] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [availableAudioTracks, setAvailableAudioTracks] = useState<string[]>(['Original']);
   
   const { questions, isGenerating, generateQuestions } = useQuestionGenerator();
 
@@ -92,21 +95,18 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
     return `${API_URL}/uploads/${filename}`;
   };
 
-  // Get the appropriate video source based on selected audio track
-  const getOriginalVideoUrl = () => {
-    // Priority: processed_video_url > original_video_url
+  // Get the video source - now we use a single video with embedded audio tracks
+  const getVideoSource = () => {
+    // If dubbed video exists, use it (has multiple audio tracks embedded)
+    if (video?.dub_url) {
+      return getVideoUrl(video.dub_url);
+    }
+    // Fall back to processed or original video
     const path = (video as any)?.processed_video_url || video?.original_video_url;
     return getVideoUrl(path);
   };
 
-  const getDubbedVideoUrl = () => {
-    return getVideoUrl(video?.dub_url);
-  };
-
-  // Use different video files for different audio tracks
-  const videoSrc = audioTrack === 'english' && video?.dub_url 
-    ? getDubbedVideoUrl()
-    : getOriginalVideoUrl();
+  const videoSrc = getVideoSource();
 
   useEffect(() => {
     // Load subtitles
@@ -291,6 +291,26 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
     }
   };
 
+  // Switch audio track using HTML5 AudioTrack API
+  const switchAudioTrack = (trackIndex: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    // Try using the HTML5 AudioTracks API (supported in some browsers)
+    const audioTracks = (video as any).audioTracks;
+    if (audioTracks && audioTracks.length > 0) {
+      for (let i = 0; i < audioTracks.length; i++) {
+        audioTracks[i].enabled = (i === trackIndex);
+      }
+      setAudioTrack(trackIndex);
+      console.log(`Switched to audio track ${trackIndex}`);
+    } else {
+      // Fallback: just update state (audio switching not supported)
+      setAudioTrack(trackIndex);
+      console.log('Audio track switching not supported by browser, updated UI only');
+    }
+  };
+
   return (
     <div className="grid lg:grid-cols-3 gap-4">
       {/* Video Section */}
@@ -391,23 +411,31 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                         onClick={() => setShowSettings(!showSettings)}
                       >
                         <Languages className="w-4 h-4" />
-                        <span className="text-xs font-body">{audioTrack === 'original' ? 'ML' : 'EN'}</span>
+                        <span className="text-xs font-body">
+                          {audioTrack === 0 ? 'Original' : audioTrack === 1 ? 'EN' : 'ML'}
+                        </span>
                         <ChevronDown className="w-3 h-3" />
                       </Button>
                       {showSettings && (
-                        <div className="absolute bottom-full mb-2 right-0 w-44 bg-popover border border-border rounded-lg shadow-lg p-2 z-10">
+                        <div className="absolute bottom-full mb-2 right-0 w-48 bg-popover border border-border rounded-lg shadow-lg p-2 z-10">
                           <p className="text-xs text-muted-foreground px-2 pb-2 font-body">Audio Track</p>
                           <button
-                            className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === 'original' ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
-                            onClick={() => { setAudioTrack('original'); setShowSettings(false); }}
+                            className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === 0 ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
+                            onClick={() => { switchAudioTrack(0); setShowSettings(false); }}
                           >
                             Original
                           </button>
                           <button
-                            className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === 'english' ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
-                            onClick={() => { setAudioTrack('english'); setShowSettings(false); }}
+                            className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === 1 ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
+                            onClick={() => { switchAudioTrack(1); setShowSettings(false); }}
                           >
                             English (AI Dubbed)
+                          </button>
+                          <button
+                            className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === 2 ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
+                            onClick={() => { switchAudioTrack(2); setShowSettings(false); }}
+                          >
+                            Malayalam (AI Dubbed)
                           </button>
                         </div>
                       )}
