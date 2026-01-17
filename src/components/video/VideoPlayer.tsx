@@ -35,6 +35,11 @@ interface VideoPlayerProps {
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
+interface AudioTrackInfo {
+  name: string;
+  language: string;
+}
+
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -42,7 +47,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const [duration, setDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [showSubtitles, setShowSubtitles] = useState(true);
-  const [audioTrack, setAudioTrack] = useState<number>(0); // Track index: 0=original, 1=english, 2=malayalam
+  const [audioTrack, setAudioTrack] = useState<number>(0); // Track index: 0=original, 1=malayalam
   const [showSettings, setShowSettings] = useState(false);
   const [showSubtitleLang, setShowSubtitleLang] = useState(false);
   const [subtitleLang, setSubtitleLang] = useState<'original' | 'en' | 'ml'>('original');
@@ -51,7 +56,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const [notes, setNotes] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [videoError, setVideoError] = useState<string | null>(null);
-  const [availableAudioTracks, setAvailableAudioTracks] = useState<string[]>(['Original']);
+  const [availableAudioTracks, setAvailableAudioTracks] = useState<AudioTrackInfo[]>([]);
+  const [audioTracksLoaded, setAudioTracksLoaded] = useState(false);
   
   const { questions, isGenerating, generateQuestions } = useQuestionGenerator();
 
@@ -291,23 +297,73 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
     }
   };
 
+  // Load audio track manifest when video loads
+  useEffect(() => {
+    const loadAudioTracks = async () => {
+      if (!video?.dub_url) {
+        setAvailableAudioTracks([{ name: 'Original', language: 'en' }]);
+        return;
+      }
+
+      try {
+        // Try to load the dubbed manifest JSON
+        const dubPath = video.dub_url;
+        const manifestPath = dubPath.replace('.mp4', '.json').replace('_dubbed', '_dubbed');
+        const manifestUrl = getVideoUrl(manifestPath);
+        
+        if (manifestUrl) {
+          const response = await fetch(manifestUrl);
+          if (response.ok) {
+            const manifest = await response.json();
+            if (manifest.audio_tracks) {
+              setAvailableAudioTracks(manifest.audio_tracks);
+              console.log('Loaded audio tracks:', manifest.audio_tracks);
+            }
+          }
+        }
+      } catch (e) {
+        console.log('Could not load audio manifest, using defaults');
+        setAvailableAudioTracks([
+          { name: 'Original (EN)', language: 'en' },
+          { name: 'Malayalam (AI Dubbed)', language: 'ml' }
+        ]);
+      }
+      setAudioTracksLoaded(true);
+    };
+
+    loadAudioTracks();
+  }, [video?.dub_url]);
+
   // Switch audio track using HTML5 AudioTrack API
   const switchAudioTrack = (trackIndex: number) => {
     const video = videoRef.current;
     if (!video) return;
 
-    // Try using the HTML5 AudioTracks API (supported in some browsers)
+    const wasPlaying = !video.paused;
+    const savedTime = video.currentTime;
+
+    // Try using the HTML5 AudioTracks API first
     const audioTracks = (video as any).audioTracks;
-    if (audioTracks && audioTracks.length > 0) {
+    if (audioTracks && audioTracks.length > 1) {
       for (let i = 0; i < audioTracks.length; i++) {
         audioTracks[i].enabled = (i === trackIndex);
       }
       setAudioTrack(trackIndex);
-      console.log(`Switched to audio track ${trackIndex}`);
+      console.log(`Switched to audio track ${trackIndex} using HTML5 API`);
     } else {
-      // Fallback: just update state (audio switching not supported)
+      // Browser doesn't support AudioTracks API - show message
       setAudioTrack(trackIndex);
-      console.log('Audio track switching not supported by browser, updated UI only');
+      console.log('Audio track selected:', trackIndex, '(Note: Browser may not support multi-track audio)');
+      
+      // Some browsers might need a video reload to pick up different track
+      // This is a workaround for browsers that don't support AudioTracks API
+      if (video.src) {
+        video.load();
+        video.currentTime = savedTime;
+        if (wasPlaying) {
+          video.play().catch(console.error);
+        }
+      }
     }
   };
 
@@ -402,7 +458,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                     <Subtitles className="w-4 h-4" />
                   </Button>
 
-                  {video?.dub_url && (
+                  {video?.dub_url && availableAudioTracks.length > 0 && (
                     <div className="relative">
                       <Button
                         variant="ghost"
@@ -412,31 +468,25 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                       >
                         <Languages className="w-4 h-4" />
                         <span className="text-xs font-body">
-                          {audioTrack === 0 ? 'Original' : audioTrack === 1 ? 'EN' : 'ML'}
+                          {availableAudioTracks[audioTrack]?.language?.toUpperCase() || 'Audio'}
                         </span>
                         <ChevronDown className="w-3 h-3" />
                       </Button>
                       {showSettings && (
                         <div className="absolute bottom-full mb-2 right-0 w-48 bg-popover border border-border rounded-lg shadow-lg p-2 z-10">
                           <p className="text-xs text-muted-foreground px-2 pb-2 font-body">Audio Track</p>
-                          <button
-                            className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === 0 ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
-                            onClick={() => { switchAudioTrack(0); setShowSettings(false); }}
-                          >
-                            Original
-                          </button>
-                          <button
-                            className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === 1 ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
-                            onClick={() => { switchAudioTrack(1); setShowSettings(false); }}
-                          >
-                            English (AI Dubbed)
-                          </button>
-                          <button
-                            className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === 2 ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
-                            onClick={() => { switchAudioTrack(2); setShowSettings(false); }}
-                          >
-                            Malayalam (AI Dubbed)
-                          </button>
+                          {availableAudioTracks.map((track, index) => (
+                            <button
+                              key={index}
+                              className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === index ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
+                              onClick={() => { switchAudioTrack(index); setShowSettings(false); }}
+                            >
+                              {track.name}
+                            </button>
+                          ))}
+                          <p className="text-xs text-muted-foreground px-2 pt-2 mt-2 border-t border-border">
+                            Note: Some browsers may not support audio track switching
+                          </p>
                         </div>
                       )}
                     </div>
