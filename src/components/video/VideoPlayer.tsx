@@ -38,6 +38,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 interface AudioTrackInfo {
   name: string;
   language: string;
+  videoUrl?: string; // Separate video file URL for this track
 }
 
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
@@ -47,7 +48,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const [duration, setDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [showSubtitles, setShowSubtitles] = useState(true);
-  const [audioTrack, setAudioTrack] = useState<number>(0); // Track index: 0=original, 1=malayalam
+  const [selectedTrackIndex, setSelectedTrackIndex] = useState<number>(0);
   const [showSettings, setShowSettings] = useState(false);
   const [showSubtitleLang, setShowSubtitleLang] = useState(false);
   const [subtitleLang, setSubtitleLang] = useState<'original' | 'en' | 'ml'>('original');
@@ -58,6 +59,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const [videoError, setVideoError] = useState<string | null>(null);
   const [availableAudioTracks, setAvailableAudioTracks] = useState<AudioTrackInfo[]>([]);
   const [audioTracksLoaded, setAudioTracksLoaded] = useState(false);
+  const [currentVideoSrc, setCurrentVideoSrc] = useState<string | null>(null);
   
   const { questions, isGenerating, generateQuestions } = useQuestionGenerator();
 
@@ -112,7 +114,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
     return getVideoUrl(path);
   };
 
-  const videoSrc = getVideoSource();
+  // Note: videoSrc is now managed via state (currentVideoSrc) 
+  // to allow switching between different language video files
 
   useEffect(() => {
     // Load subtitles
@@ -251,7 +254,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   };
 
   const togglePlay = () => {
-    if (videoRef.current && videoSrc) {
+    if (videoRef.current && currentVideoSrc) {
       if (isPlaying) {
         videoRef.current.pause();
       } else {
@@ -297,16 +300,17 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
     }
   };
 
-  // Load audio track manifest when video loads
+  // Load audio track manifest and set up video sources
   useEffect(() => {
     const loadAudioTracks = async () => {
       if (!video?.dub_url) {
-        setAvailableAudioTracks([{ name: 'Original', language: 'en' }]);
+        const defaultTrack: AudioTrackInfo = { name: 'Original', language: 'en' };
+        setAvailableAudioTracks([defaultTrack]);
         return;
       }
 
       try {
-        // Try to load the dubbed manifest JSON
+        // Load the dubbed manifest JSON to get separate video file paths
         const dubPath = video.dub_url;
         const manifestPath = dubPath.replace('.mp4', '.json').replace('_dubbed', '_dubbed');
         const manifestUrl = getVideoUrl(manifestPath);
@@ -315,9 +319,22 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
           const response = await fetch(manifestUrl);
           if (response.ok) {
             const manifest = await response.json();
-            if (manifest.audio_tracks) {
+            console.log('Loaded dub manifest:', manifest);
+            
+            if (manifest.audio_tracks && manifest.video_files) {
+              // Create tracks with their separate video file URLs
+              const tracks: AudioTrackInfo[] = manifest.audio_tracks.map((track: any) => {
+                const videoFile = manifest.video_files[track.language];
+                return {
+                  name: track.name,
+                  language: track.language,
+                  videoUrl: videoFile ? getVideoUrl(videoFile) : null
+                };
+              });
+              setAvailableAudioTracks(tracks);
+              console.log('Loaded audio tracks with video files:', tracks);
+            } else if (manifest.audio_tracks) {
               setAvailableAudioTracks(manifest.audio_tracks);
-              console.log('Loaded audio tracks:', manifest.audio_tracks);
             }
           }
         }
@@ -334,36 +351,58 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
     loadAudioTracks();
   }, [video?.dub_url]);
 
-  // Switch audio track using HTML5 AudioTrack API
+  // Set initial video source
+  useEffect(() => {
+    const initialSrc = getVideoSource();
+    if (initialSrc) {
+      setCurrentVideoSrc(initialSrc);
+    }
+  }, [video]);
+
+  // Switch audio track by loading a different video file (cross-browser compatible!)
   const switchAudioTrack = (trackIndex: number) => {
-    const video = videoRef.current;
-    if (!video) return;
+    const track = availableAudioTracks[trackIndex];
+    if (!track) return;
 
-    const wasPlaying = !video.paused;
-    const savedTime = video.currentTime;
+    const videoEl = videoRef.current;
+    const wasPlaying = videoEl && !videoEl.paused;
+    const savedTime = videoEl?.currentTime || 0;
 
-    // Try using the HTML5 AudioTracks API first
-    const audioTracks = (video as any).audioTracks;
-    if (audioTracks && audioTracks.length > 1) {
-      for (let i = 0; i < audioTracks.length; i++) {
-        audioTracks[i].enabled = (i === trackIndex);
-      }
-      setAudioTrack(trackIndex);
-      console.log(`Switched to audio track ${trackIndex} using HTML5 API`);
+    // Use the track's separate video file if available
+    let newSrc: string | null = null;
+    
+    if (track.videoUrl) {
+      newSrc = track.videoUrl;
     } else {
-      // Browser doesn't support AudioTracks API - show message
-      setAudioTrack(trackIndex);
-      console.log('Audio track selected:', trackIndex, '(Note: Browser may not support multi-track audio)');
-      
-      // Some browsers might need a video reload to pick up different track
-      // This is a workaround for browsers that don't support AudioTracks API
-      if (video.src) {
-        video.load();
-        video.currentTime = savedTime;
-        if (wasPlaying) {
-          video.play().catch(console.error);
+      // Fallback: try to construct the URL from the dub_url
+      const basePath = video?.dub_url?.replace('_dubbed.mp4', '').replace('.mp4', '');
+      if (basePath && track.language) {
+        if (track.language === 'en' && trackIndex === 0) {
+          // Original English - use the main dubbed file or original
+          newSrc = getVideoUrl(video?.dub_url || '');
+        } else {
+          // Other language - try _languagecode.mp4
+          newSrc = getVideoUrl(`${basePath}_${track.language}.mp4`);
         }
       }
+    }
+
+    if (newSrc && newSrc !== currentVideoSrc) {
+      console.log(`Switching to ${track.name}: ${newSrc}`);
+      setCurrentVideoSrc(newSrc);
+      setSelectedTrackIndex(trackIndex);
+      
+      // Wait for video to load, then restore position and play state
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.currentTime = savedTime;
+          if (wasPlaying) {
+            videoRef.current.play().catch(console.error);
+          }
+        }
+      }, 100);
+    } else {
+      setSelectedTrackIndex(trackIndex);
     }
   };
 
@@ -373,11 +412,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
       <div className="lg:col-span-2 space-y-4">
         <Card className="overflow-hidden">
           <div className="relative bg-black aspect-video">
-            {videoSrc ? (
+            {currentVideoSrc ? (
               <video
                 ref={videoRef}
                 className="w-full h-full"
-                src={videoSrc}
+                src={currentVideoSrc}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
                 onPlay={() => setIsPlaying(true)}
@@ -437,7 +476,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                   <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => skip(-10)}>
                     <SkipBack className="w-4 h-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-9 w-9" onClick={togglePlay} disabled={!videoSrc}>
+                  <Button variant="ghost" size="icon" className="h-9 w-9" onClick={togglePlay} disabled={!currentVideoSrc}>
                     {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
                   </Button>
                   <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => skip(10)}>
@@ -468,7 +507,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                       >
                         <Languages className="w-4 h-4" />
                         <span className="text-xs font-body">
-                          {availableAudioTracks[audioTrack]?.language?.toUpperCase() || 'Audio'}
+                          {availableAudioTracks[selectedTrackIndex]?.language?.toUpperCase() || 'Audio'}
                         </span>
                         <ChevronDown className="w-3 h-3" />
                       </Button>
@@ -478,14 +517,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                           {availableAudioTracks.map((track, index) => (
                             <button
                               key={index}
-                              className={`w-full text-left px-2 py-1.5 rounded text-sm ${audioTrack === index ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
+                              className={`w-full text-left px-2 py-1.5 rounded text-sm ${selectedTrackIndex === index ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
                               onClick={() => { switchAudioTrack(index); setShowSettings(false); }}
                             >
                               {track.name}
                             </button>
                           ))}
                           <p className="text-xs text-muted-foreground px-2 pt-2 mt-2 border-t border-border">
-                            Note: Some browsers may not support audio track switching
+                            Switching loads a different audio track
                           </p>
                         </div>
                       )}
