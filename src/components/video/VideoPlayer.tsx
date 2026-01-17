@@ -143,9 +143,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
       }
       
       try {
-        // Try to load the subtitle manifest
-        const subtitlePath = video.subtitle_url;
-        const manifestPath = subtitlePath.replace('.srt', '_subtitles_manifest.json').replace('.vtt', '_subtitles_manifest.json');
+        // Build manifest path from the video's processed video URL or subtitle URL
+        const basePath = (video as any)?.processed_video_url || video.subtitle_url;
+        
+        // Extract base filename without extension and language suffix
+        let baseFileName = basePath.replace(/\.[^/.]+$/, ''); // Remove extension
+        baseFileName = baseFileName.replace(/_[a-z]{2}$/, ''); // Remove language suffix like _ml, _en
+        baseFileName = baseFileName.replace(/_trimmed$/, '_trimmed'); // Keep _trimmed
+        
+        // Construct manifest path
+        const manifestPath = `${baseFileName}_subtitles_manifest.json`;
         const manifestUrl = getVideoUrl(manifestPath);
         
         console.log('Loading subtitle manifest from:', manifestUrl);
@@ -159,15 +166,25 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
             if (manifest.subtitles) {
               const tracks: SubtitleTrackInfo[] = [];
               
-              // Add each available language
-              for (const [key, data] of Object.entries(manifest.subtitles)) {
+              // Add each available language in a consistent order
+              const languageOrder = ['original', 'en', 'english', 'ml', 'malayalam', 'hi', 'hindi', 'ta', 'tamil'];
+              const sortedEntries = Object.entries(manifest.subtitles).sort(([keyA], [keyB]) => {
+                const indexA = languageOrder.indexOf(keyA.toLowerCase());
+                const indexB = languageOrder.indexOf(keyB.toLowerCase());
+                return (indexA === -1 ? 999 : indexA) - (indexB === -1 ? 999 : indexB);
+              });
+              
+              for (const [key, data] of sortedEntries) {
                 const subData = data as any;
                 const lang = subData.language || key;
+                const srtPath = subData.srt;
+                const vttPath = subData.vtt;
+                
                 tracks.push({
                   name: LANGUAGE_NAMES[lang] || lang.toUpperCase(),
                   language: lang,
-                  srtUrl: subData.srt ? getVideoUrl(subData.srt) || undefined : undefined,
-                  vttUrl: subData.vtt ? getVideoUrl(subData.vtt) || undefined : undefined
+                  srtUrl: srtPath ? `${API_URL}${srtPath.startsWith('/') ? '' : '/'}${srtPath}` : undefined,
+                  vttUrl: vttPath ? `${API_URL}${vttPath.startsWith('/') ? '' : '/'}${vttPath}` : undefined
                 });
               }
               
@@ -179,11 +196,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                 const firstTrack = tracks[0];
                 const url = firstTrack.srtUrl || firstTrack.vttUrl;
                 if (url) {
-                  loadSubtitles(url);
+                  loadSubtitlesDirectUrl(url);
                 }
               }
               return;
             }
+          } else {
+            console.log('Manifest not found, status:', response.status);
           }
         }
       } catch (e) {
@@ -191,7 +210,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
       }
       
       // Fallback: load single subtitle file
-      loadSubtitles(video.subtitle_url);
+      const fallbackUrl = getVideoUrl(video.subtitle_url);
+      if (fallbackUrl) {
+        loadSubtitlesDirectUrl(fallbackUrl);
+      }
       setAvailableSubtitleTracks([{
         name: 'Original',
         language: 'original',
@@ -230,14 +252,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
     
     const url = track.srtUrl || track.vttUrl;
     if (url) {
-      loadSubtitles(url);
+      loadSubtitlesDirectUrl(url);
     }
   };
 
-  const loadSubtitles = async (url: string) => {
+  // Load subtitles from a direct URL (already fully constructed)
+  const loadSubtitlesDirectUrl = async (fullUrl: string) => {
     try {
-      // Build correct URL for subtitle file
-      const fullUrl = getVideoUrl(url) || url;
       console.log('Loading subtitles from:', fullUrl);
       const response = await fetch(fullUrl);
       if (response.ok) {
@@ -251,6 +272,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
     } catch (error) {
       console.error('Error loading subtitles:', error);
     }
+  };
+
+  const loadSubtitles = async (url: string) => {
+    const fullUrl = getVideoUrl(url) || url;
+    await loadSubtitlesDirectUrl(fullUrl);
   };
 
   const loadNotes = async (url: string) => {

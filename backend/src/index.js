@@ -102,8 +102,14 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 * 1024 } }); // 10GB limit
 
-// Job queue for processing
-const jobQueue = [];
+// Job queue for processing with priority and concurrency control
+const jobQueue = {
+  high: [],    // High priority - user-triggered actions
+  normal: [],  // Normal priority - auto-processing
+  low: []      // Low priority - background tasks
+};
+let activeJobs = 0;
+const MAX_CONCURRENT_JOBS = 1; // Process one at a time to avoid resource conflicts
 let isProcessing = false;
 
 // Active camera recordings
@@ -598,24 +604,73 @@ const processJob = async (job) => {
   }
 };
 
-const processQueue = async () => {
-  if (isProcessing || jobQueue.length === 0) return;
-  
-  isProcessing = true;
-  const job = jobQueue.shift();
-  
-  await processJob(job);
-  
-  isProcessing = false;
-  processQueue(); // Process next job
+// Get next job from queue based on priority
+const getNextJob = () => {
+  if (jobQueue.high.length > 0) return jobQueue.high.shift();
+  if (jobQueue.normal.length > 0) return jobQueue.normal.shift();
+  if (jobQueue.low.length > 0) return jobQueue.low.shift();
+  return null;
 };
 
-const addToQueue = (job) => {
+// Get total queue length
+const getQueueLength = () => {
+  return jobQueue.high.length + jobQueue.normal.length + jobQueue.low.length;
+};
+
+// Get queue status
+const getQueueStatus = () => {
+  return {
+    high: jobQueue.high.length,
+    normal: jobQueue.normal.length,
+    low: jobQueue.low.length,
+    total: getQueueLength(),
+    activeJobs,
+    isProcessing
+  };
+};
+
+const processQueue = async () => {
+  if (isProcessing || activeJobs >= MAX_CONCURRENT_JOBS) return;
+  
+  const job = getNextJob();
+  if (!job) return;
+  
+  isProcessing = true;
+  activeJobs++;
+  
+  console.log(`📋 Queue status: ${getQueueLength()} jobs waiting, ${activeJobs} active`);
+  
+  try {
+    await processJob(job);
+  } catch (error) {
+    console.error(`❌ Job failed:`, error.message);
+  }
+  
+  activeJobs--;
+  isProcessing = false;
+  
+  // Process next job if queue not empty
+  if (getQueueLength() > 0) {
+    setImmediate(processQueue); // Use setImmediate to avoid stack overflow
+  }
+};
+
+const addToQueue = (job, priority = 'normal') => {
   job.id = uuidv4();
   job.createdAt = new Date().toISOString();
   job.status = 'queued';
-  jobQueue.push(job);
-  console.log(`📋 Added job to queue: ${job.type} (${job.id})`);
+  job.priority = priority;
+  
+  // Add to appropriate queue
+  if (priority === 'high') {
+    jobQueue.high.push(job);
+  } else if (priority === 'low') {
+    jobQueue.low.push(job);
+  } else {
+    jobQueue.normal.push(job);
+  }
+  
+  console.log(`📋 Added job to queue: ${job.type} (${job.id}) [${priority}] - Queue: ${getQueueLength()}`);
   processQueue();
   return job.id;
 };
@@ -902,10 +957,44 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     firebase: useRestApi ? 'rest-api' : 'admin-sdk',
-    queue: jobQueue.length,
+    queue: getQueueStatus(),
     processing: isProcessing,
     activeRecordings: Array.from(activeRecordings.keys())
   });
+});
+
+// Queue status endpoint
+app.get('/api/queue/status', (req, res) => {
+  const status = getQueueStatus();
+  
+  // Get details of pending jobs
+  const pendingJobs = [
+    ...jobQueue.high.map(j => ({ ...j, priority: 'high' })),
+    ...jobQueue.normal.map(j => ({ ...j, priority: 'normal' })),
+    ...jobQueue.low.map(j => ({ ...j, priority: 'low' }))
+  ].map(j => ({
+    id: j.id,
+    type: j.type,
+    videoId: j.videoId,
+    priority: j.priority,
+    createdAt: j.createdAt,
+    status: j.status
+  }));
+  
+  res.json({
+    ...status,
+    pendingJobs
+  });
+});
+
+// Clear queue (admin only)
+app.delete('/api/queue/clear', (req, res) => {
+  const cleared = getQueueLength();
+  jobQueue.high = [];
+  jobQueue.normal = [];
+  jobQueue.low = [];
+  console.log(`🗑️ Queue cleared: ${cleared} jobs removed`);
+  res.json({ success: true, cleared });
 });
 
 // Upload video

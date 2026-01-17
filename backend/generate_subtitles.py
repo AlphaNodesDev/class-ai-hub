@@ -146,20 +146,39 @@ def get_translation_model(src_lang, tgt_lang):
             from transformers import MarianMTModel, MarianTokenizer
             
             # Map language codes to Helsinki-NLP model names
+            # Use specific models for each language for better accuracy
             lang_map = {
-                ('en', 'ml'): 'Helsinki-NLP/opus-mt-en-dra',  # Dravidian family
-                ('en', 'hi'): 'Helsinki-NLP/opus-mt-en-hi', 
-                ('en', 'ta'): 'Helsinki-NLP/opus-mt-en-dra',  # Dravidian family
+                ('en', 'ml'): [
+                    'Helsinki-NLP/opus-mt-en-ml',  # Direct English to Malayalam
+                    'Helsinki-NLP/opus-mt-en-dra',  # Fallback: Dravidian family
+                ],
+                ('en', 'hi'): [
+                    'Helsinki-NLP/opus-mt-en-hi',  # Direct English to Hindi
+                ], 
+                ('en', 'ta'): [
+                    'Helsinki-NLP/opus-mt-en-ta',  # Direct English to Tamil
+                    'Helsinki-NLP/opus-mt-en-mul',  # Fallback: Multilingual
+                ],
             }
             
-            model_name = lang_map.get((src_lang, tgt_lang))
-            if model_name:
-                print(f"   Loading translation: {src_lang} -> {tgt_lang}...")
-                tokenizer = MarianTokenizer.from_pretrained(model_name)
-                model = MarianMTModel.from_pretrained(model_name)
-                _translation_models[key] = {'tokenizer': tokenizer, 'model': model}
-                print(f"   [OK] Translation model loaded")
-            else:
+            model_names = lang_map.get((src_lang, tgt_lang), [])
+            model_loaded = False
+            
+            for model_name in model_names:
+                try:
+                    print(f"   Loading translation: {src_lang} -> {tgt_lang} ({model_name})...")
+                    tokenizer = MarianTokenizer.from_pretrained(model_name)
+                    model = MarianMTModel.from_pretrained(model_name)
+                    _translation_models[key] = {'tokenizer': tokenizer, 'model': model, 'target_lang': tgt_lang}
+                    print(f"   [OK] Translation model loaded: {model_name}")
+                    model_loaded = True
+                    break
+                except Exception as e:
+                    print(f"   [!] Model {model_name} failed: {e}, trying next...")
+                    continue
+            
+            if not model_loaded:
+                print(f"   [!] No translation model available for {src_lang} -> {tgt_lang}")
                 _translation_models[key] = None
                 
         except Exception as e:
