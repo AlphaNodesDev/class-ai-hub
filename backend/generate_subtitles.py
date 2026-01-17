@@ -99,25 +99,27 @@ def generate_vtt(segments: list, output_path: Path):
 
 def save_subtitles(segments: list, base_output: Path, lang_suffix: str, output_format: str):
     """Save subtitles in requested formats"""
+    srt_path = Path(str(base_output) + f"{lang_suffix}.srt")
+    vtt_path = Path(str(base_output) + f"{lang_suffix}.vtt")
+    txt_path = Path(str(base_output) + f"{lang_suffix}.txt")
+    
     if output_format in ['srt', 'both']:
-        srt_path = Path(str(base_output) + f"{lang_suffix}.srt")
         generate_srt(segments, srt_path)
     
     if output_format in ['vtt', 'both']:
-        vtt_path = Path(str(base_output) + f"{lang_suffix}.vtt")
         generate_vtt(segments, vtt_path)
     
     # Save full transcript as text
-    txt_path = Path(str(base_output) + f"{lang_suffix}.txt")
     full_text = ' '.join([seg['text'].strip() for seg in segments if seg.get('text')])
     with open(txt_path, 'w', encoding='utf-8') as f:
         f.write(full_text)
     print(f"   [OK] Transcript saved: {txt_path}")
     
+    # Return relative web paths (for frontend access)
     return {
-        'srt': str(Path(str(base_output) + f"{lang_suffix}.srt")),
-        'vtt': str(Path(str(base_output) + f"{lang_suffix}.vtt")),
-        'txt': str(txt_path)
+        'srt': f"/processed/{srt_path.name}",
+        'vtt': f"/processed/{vtt_path.name}",
+        'txt': f"/processed/{txt_path.name}"
     }
 
 def transcribe_audio(model, input_path: str, language: str = None, task: str = 'transcribe', device: str = 'cpu'):
@@ -145,9 +147,9 @@ def get_translation_model(src_lang, tgt_lang):
             
             # Map language codes to Helsinki-NLP model names
             lang_map = {
-                ('en', 'ml'): 'Helsinki-NLP/opus-mt-en-ml',
+                ('en', 'ml'): 'Helsinki-NLP/opus-mt-en-dra',  # Dravidian family
                 ('en', 'hi'): 'Helsinki-NLP/opus-mt-en-hi', 
-                ('en', 'ta'): 'Helsinki-NLP/opus-mt-en-ta',
+                ('en', 'ta'): 'Helsinki-NLP/opus-mt-en-dra',  # Dravidian family
             }
             
             model_name = lang_map.get((src_lang, tgt_lang))

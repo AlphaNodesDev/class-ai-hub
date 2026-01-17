@@ -41,6 +41,21 @@ interface AudioTrackInfo {
   videoUrl?: string; // Separate video file URL for this track
 }
 
+interface SubtitleTrackInfo {
+  name: string;
+  language: string;
+  srtUrl?: string;
+  vttUrl?: string;
+}
+
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: 'English',
+  ml: 'Malayalam',
+  hi: 'Hindi',
+  ta: 'Tamil',
+  original: 'Original'
+};
+
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -51,7 +66,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   const [selectedTrackIndex, setSelectedTrackIndex] = useState<number>(0);
   const [showSettings, setShowSettings] = useState(false);
   const [showSubtitleLang, setShowSubtitleLang] = useState(false);
-  const [subtitleLang, setSubtitleLang] = useState<'original' | 'en' | 'ml'>('original');
+  const [selectedSubtitleIndex, setSelectedSubtitleIndex] = useState<number>(0);
+  const [availableSubtitleTracks, setAvailableSubtitleTracks] = useState<SubtitleTrackInfo[]>([]);
   const [activeTab, setActiveTab] = useState<'subtitles' | 'notes' | 'questions'>('subtitles');
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   const [notes, setNotes] = useState<string[]>([]);
@@ -118,12 +134,72 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   // to allow switching between different language video files
 
   useEffect(() => {
-    // Load subtitles
-    if (video?.subtitle_url) {
+    // Load subtitle manifest
+    const loadSubtitleManifest = async () => {
+      if (!video?.subtitle_url) {
+        setAvailableSubtitleTracks([]);
+        setSubtitles([]);
+        return;
+      }
+      
+      try {
+        // Try to load the subtitle manifest
+        const subtitlePath = video.subtitle_url;
+        const manifestPath = subtitlePath.replace('.srt', '_subtitles_manifest.json').replace('.vtt', '_subtitles_manifest.json');
+        const manifestUrl = getVideoUrl(manifestPath);
+        
+        console.log('Loading subtitle manifest from:', manifestUrl);
+        
+        if (manifestUrl) {
+          const response = await fetch(manifestUrl);
+          if (response.ok) {
+            const manifest = await response.json();
+            console.log('Loaded subtitle manifest:', manifest);
+            
+            if (manifest.subtitles) {
+              const tracks: SubtitleTrackInfo[] = [];
+              
+              // Add each available language
+              for (const [key, data] of Object.entries(manifest.subtitles)) {
+                const subData = data as any;
+                const lang = subData.language || key;
+                tracks.push({
+                  name: LANGUAGE_NAMES[lang] || lang.toUpperCase(),
+                  language: lang,
+                  srtUrl: subData.srt ? getVideoUrl(subData.srt) || undefined : undefined,
+                  vttUrl: subData.vtt ? getVideoUrl(subData.vtt) || undefined : undefined
+                });
+              }
+              
+              setAvailableSubtitleTracks(tracks);
+              console.log('Available subtitle tracks:', tracks);
+              
+              // Load first track's subtitles
+              if (tracks.length > 0) {
+                const firstTrack = tracks[0];
+                const url = firstTrack.srtUrl || firstTrack.vttUrl;
+                if (url) {
+                  loadSubtitles(url);
+                }
+              }
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        console.log('Could not load subtitle manifest:', e);
+      }
+      
+      // Fallback: load single subtitle file
       loadSubtitles(video.subtitle_url);
-    } else {
-      setSubtitles([]);
-    }
+      setAvailableSubtitleTracks([{
+        name: 'Original',
+        language: 'original',
+        srtUrl: getVideoUrl(video.subtitle_url) || undefined
+      }]);
+    };
+    
+    loadSubtitleManifest();
 
     // Load notes
     if (video?.notes_url) {
@@ -143,6 +219,20 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
       generateQuestions('', topics);
     }
   }, [video, generateQuestions]);
+
+  // Switch subtitle language
+  const switchSubtitleTrack = (trackIndex: number) => {
+    const track = availableSubtitleTracks[trackIndex];
+    if (!track) return;
+    
+    console.log('Switching subtitles to:', track);
+    setSelectedSubtitleIndex(trackIndex);
+    
+    const url = track.srtUrl || track.vttUrl;
+    if (url) {
+      loadSubtitles(url);
+    }
+  };
 
   const loadSubtitles = async (url: string) => {
     try {
@@ -519,15 +609,57 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <Button
-                    variant={showSubtitles ? 'secondary' : 'ghost'}
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={() => setShowSubtitles(!showSubtitles)}
-                  >
-                    <Subtitles className="w-4 h-4" />
-                  </Button>
+                  {/* Subtitle Toggle & Language Selector */}
+                  <div className="relative">
+                    <Button
+                      variant={showSubtitles ? 'secondary' : 'ghost'}
+                      size="sm"
+                      className="h-8 gap-1"
+                      onClick={() => {
+                        if (availableSubtitleTracks.length > 1) {
+                          setShowSubtitleLang(!showSubtitleLang);
+                        } else {
+                          setShowSubtitles(!showSubtitles);
+                        }
+                      }}
+                    >
+                      <Subtitles className="w-4 h-4" />
+                      {availableSubtitleTracks.length > 1 && (
+                        <>
+                          <span className="text-xs font-body">
+                            {availableSubtitleTracks[selectedSubtitleIndex]?.language?.toUpperCase() || 'CC'}
+                          </span>
+                          <ChevronDown className="w-3 h-3" />
+                        </>
+                      )}
+                    </Button>
+                    {showSubtitleLang && availableSubtitleTracks.length > 1 && (
+                      <div className="absolute bottom-full mb-2 right-0 w-48 bg-popover border border-border rounded-lg shadow-lg p-2 z-10">
+                        <p className="text-xs text-muted-foreground px-2 pb-2 font-body">Subtitle Language</p>
+                        <button
+                          className={`w-full text-left px-2 py-1.5 rounded text-sm ${!showSubtitles ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
+                          onClick={() => { setShowSubtitles(false); setShowSubtitleLang(false); }}
+                        >
+                          Off
+                        </button>
+                        {availableSubtitleTracks.map((track, index) => (
+                          <button
+                            key={index}
+                            className={`w-full text-left px-2 py-1.5 rounded text-sm ${showSubtitles && selectedSubtitleIndex === index ? 'bg-secondary' : 'hover:bg-secondary/50'}`}
+                            onClick={() => { 
+                              setShowSubtitles(true);
+                              switchSubtitleTrack(index); 
+                              setShowSubtitleLang(false); 
+                            }}
+                          >
+                            {track.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
 
+                  {/* Audio Track Selector */}
                   {video?.dub_url && availableAudioTracks.length > 0 && (
                     <div className="relative">
                       <Button
