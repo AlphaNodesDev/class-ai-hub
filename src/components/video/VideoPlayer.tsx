@@ -306,6 +306,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
       if (!video?.dub_url) {
         const defaultTrack: AudioTrackInfo = { name: 'Original', language: 'en' };
         setAvailableAudioTracks([defaultTrack]);
+        setAudioTracksLoaded(true);
         return;
       }
 
@@ -315,31 +316,45 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
         const manifestPath = dubPath.replace('.mp4', '.json').replace('_dubbed', '_dubbed');
         const manifestUrl = getVideoUrl(manifestPath);
         
+        console.log('Loading manifest from:', manifestUrl);
+        
         if (manifestUrl) {
           const response = await fetch(manifestUrl);
           if (response.ok) {
             const manifest = await response.json();
             console.log('Loaded dub manifest:', manifest);
+            console.log('Video files in manifest:', manifest.video_files);
             
             if (manifest.audio_tracks && manifest.video_files) {
               // Create tracks with their separate video file URLs
               const tracks: AudioTrackInfo[] = manifest.audio_tracks.map((track: any) => {
                 const videoFile = manifest.video_files[track.language];
+                // Video file paths from manifest are already relative (e.g., /processed/file.mp4)
+                const videoUrl = videoFile ? `${API_URL}${videoFile.startsWith('/') ? '' : '/'}${videoFile}` : null;
+                console.log(`Track ${track.language}: ${videoFile} -> ${videoUrl}`);
                 return {
                   name: track.name,
                   language: track.language,
-                  videoUrl: videoFile ? getVideoUrl(videoFile) : null
+                  videoUrl
                 };
               });
               setAvailableAudioTracks(tracks);
+              
+              // Set initial video to original track
+              if (tracks.length > 0 && tracks[0].videoUrl) {
+                setCurrentVideoSrc(tracks[0].videoUrl);
+              }
+              
               console.log('Loaded audio tracks with video files:', tracks);
             } else if (manifest.audio_tracks) {
               setAvailableAudioTracks(manifest.audio_tracks);
             }
+          } else {
+            console.log('Manifest fetch failed:', response.status);
           }
         }
       } catch (e) {
-        console.log('Could not load audio manifest, using defaults');
+        console.log('Could not load audio manifest:', e);
         setAvailableAudioTracks([
           { name: 'Original (EN)', language: 'en' },
           { name: 'Malayalam (AI Dubbed)', language: 'ml' }
@@ -362,11 +377,17 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
   // Switch audio track by loading a different video file (cross-browser compatible!)
   const switchAudioTrack = (trackIndex: number) => {
     const track = availableAudioTracks[trackIndex];
-    if (!track) return;
+    if (!track) {
+      console.log('Track not found at index:', trackIndex);
+      return;
+    }
 
     const videoEl = videoRef.current;
     const wasPlaying = videoEl && !videoEl.paused;
     const savedTime = videoEl?.currentTime || 0;
+
+    console.log('Switching to track:', track);
+    console.log('Track videoUrl:', track.videoUrl);
 
     // Use the track's separate video file if available
     let newSrc: string | null = null;
@@ -377,30 +398,40 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video }) => {
       // Fallback: try to construct the URL from the dub_url
       const basePath = video?.dub_url?.replace('_dubbed.mp4', '').replace('.mp4', '');
       if (basePath && track.language) {
-        if (track.language === 'en' && trackIndex === 0) {
-          // Original English - use the main dubbed file or original
-          newSrc = getVideoUrl(video?.dub_url || '');
+        // Construct fallback path based on language
+        const filename = basePath.replace(/\\/g, '/').split('/').pop();
+        if (trackIndex === 0) {
+          // Original track
+          newSrc = `${API_URL}/processed/${filename}_original.mp4`;
         } else {
           // Other language - try _languagecode.mp4
-          newSrc = getVideoUrl(`${basePath}_${track.language}.mp4`);
+          newSrc = `${API_URL}/processed/${filename}_${track.language}.mp4`;
         }
+        console.log('Fallback URL constructed:', newSrc);
       }
     }
 
     if (newSrc && newSrc !== currentVideoSrc) {
-      console.log(`Switching to ${track.name}: ${newSrc}`);
+      console.log(`Switching audio to ${track.name}: ${newSrc}`);
       setCurrentVideoSrc(newSrc);
       setSelectedTrackIndex(trackIndex);
       
       // Wait for video to load, then restore position and play state
-      setTimeout(() => {
+      const restorePlayback = () => {
         if (videoRef.current) {
           videoRef.current.currentTime = savedTime;
           if (wasPlaying) {
             videoRef.current.play().catch(console.error);
           }
         }
-      }, 100);
+      };
+      
+      // Use loadedmetadata event for more reliable timing
+      if (videoEl) {
+        videoEl.addEventListener('loadedmetadata', restorePlayback, { once: true });
+        // Fallback timeout in case event doesn't fire
+        setTimeout(restorePlayback, 500);
+      }
     } else {
       setSelectedTrackIndex(trackIndex);
     }
