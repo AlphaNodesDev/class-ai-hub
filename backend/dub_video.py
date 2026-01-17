@@ -527,39 +527,44 @@ def main():
                     'lang': 'ml'
                 })
         
-        # Step 5: Create output video
-        print("\n[5/6] Creating dubbed video...")
+        # Step 5: Create output videos - ALWAYS create separate files for browser compatibility
+        print("\n[5/6] Creating dubbed videos...")
         
-        if args.embed_tracks and len(audio_tracks) > 1:
-            # Create single video with multiple audio tracks
-            success = create_multi_audio_video(input_path, audio_tracks, output_path)
-        else:
-            # Create separate videos for each dub
-            for i, track in enumerate(audio_tracks[1:], 1):  # Skip original
+        video_files = {}
+        
+        # Create separate video file for each audio track (cross-browser compatible)
+        for i, track in enumerate(audio_tracks):
+            if i == 0:
+                # Original - just copy or reference original
+                track_output = output_path.with_stem(f"{output_path.stem}_original")
+                cmd = ['ffmpeg', '-y', '-i', str(input_path), '-c', 'copy', str(track_output)]
+            else:
+                # Dubbed tracks - merge video with new audio
                 track_output = output_path.with_stem(f"{output_path.stem}_{track['lang']}")
-                
                 cmd = ['ffmpeg', '-y', '-i', str(input_path), '-i', str(track['path']),
                        '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac',
                        '-b:a', '192k', str(track_output)]
-                
-                result = subprocess.run(cmd, capture_output=True)
-                
-                if result.returncode == 0 and track_output.exists():
-                    print(f"   [OK] {track['name']} saved: {track_output}")
-                else:
-                    print(f"   [!] Failed to create {track['name']}")
             
-            # Also create a combined video with dual audio if we have 2 dub tracks
-            if len(audio_tracks) >= 2:
-                create_multi_audio_video(input_path, audio_tracks, output_path)
+            result = subprocess.run(cmd, capture_output=True)
+            
+            if result.returncode == 0 and track_output.exists():
+                print(f"   [OK] {track['name']} saved: {track_output}")
+                video_files[track['lang']] = str(track_output)
+            else:
+                print(f"   [!] Failed to create {track['name']}: {result.stderr.decode()[:100]}")
         
-        # Step 6: Save manifest
+        # Also create combined multi-track video (for players that support it)
+        if args.embed_tracks and len(audio_tracks) > 1:
+            create_multi_audio_video(input_path, audio_tracks, output_path)
+        
+        # Step 6: Save manifest with separate video file paths
         print("\n[6/6] Saving manifest...")
         manifest = {
             'source_language': detected_lang,
             'audio_tracks': [
                 {'name': t['name'], 'language': t['lang']} for t in audio_tracks
             ],
+            'video_files': video_files,
             'output_file': str(output_path)
         }
         
