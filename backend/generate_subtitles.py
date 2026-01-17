@@ -2,20 +2,20 @@
 """
 Generate Multi-Language Subtitles using OpenAI Whisper (Local AI)
 =================================================================
-Transcribes video/audio and outputs subtitles in MULTIPLE languages.
-
-Usage:
-    python generate_subtitles.py input.mp4 --model medium --language ml --all_languages
-
-Requirements:
-    pip install openai-whisper torch
+Auto-detects video language and generates subtitles in ALL languages.
 
 Features:
-    - Generates original language subtitles (SRT/VTT)
-    - Generates English translation subtitles
-    - Generates Malayalam subtitles (for English videos)
-    - Auto-detects language if not specified
-    - Supports Malayalam, Hindi, Tamil, Telugu, English and more
+    - AUTO language detection (no need to specify)
+    - Generates subtitles in ALL supported languages automatically
+    - Original language + English + Malayalam + Hindi + Tamil
+    - Supports mixed-language videos
+    - Outputs SRT, VTT, and TXT formats
+
+Usage:
+    python generate_subtitles.py input.mp4 --model medium --all_languages
+
+Requirements:
+    pip install openai-whisper torch transformers sentencepiece
 """
 
 import argparse
@@ -29,8 +29,9 @@ import json
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 
-# Language mapping for display and codes
-LANG_MAP = {
+# Supported languages
+SUPPORTED_LANGUAGES = ['en', 'ml', 'hi', 'ta']
+LANGUAGE_NAMES = {
     'ml': 'Malayalam',
     'en': 'English', 
     'hi': 'Hindi',
@@ -43,13 +44,16 @@ LANG_MAP = {
     'telugu': 'Telugu'
 }
 
+# Translation models cache
+_translation_models = {}
+
 # Best Whisper models for specific languages
 LANGUAGE_MODELS = {
-    'ml': 'medium',  # Malayalam needs at least medium for good accuracy
+    'ml': 'medium',
     'hi': 'medium',
     'ta': 'medium',
     'te': 'medium',
-    'en': 'small',   # English works well with small
+    'en': 'small',
 }
 
 def format_timestamp(seconds: float) -> str:
@@ -130,30 +134,71 @@ def transcribe_audio(model, input_path: str, language: str = None, task: str = '
     result = model.transcribe(str(input_path), **options)
     return result
 
-def translate_to_malayalam(english_segments: list, model) -> list:
-    """
-    Translate English text to Malayalam using available methods.
-    This is a placeholder - in production, use a proper translation API.
-    For now, we keep the timing but note that translation needs external service.
-    """
-    # Note: Whisper can only translate TO English, not from English
-    # For English -> Malayalam, you would need:
-    # 1. Google Translate API
-    # 2. Helsinki-NLP models (transformers)
-    # 3. Other translation services
+def get_translation_model(src_lang, tgt_lang):
+    """Get or create translation model for language pair"""
+    global _translation_models
     
-    print("   [!] Note: English->Malayalam translation requires external service")
-    print("   [!] Returning English subtitles with Malayalam markers")
+    key = f"{src_lang}_to_{tgt_lang}"
+    if key not in _translation_models:
+        try:
+            from transformers import MarianMTModel, MarianTokenizer
+            
+            # Map language codes to Helsinki-NLP model names
+            lang_map = {
+                ('en', 'ml'): 'Helsinki-NLP/opus-mt-en-ml',
+                ('en', 'hi'): 'Helsinki-NLP/opus-mt-en-hi', 
+                ('en', 'ta'): 'Helsinki-NLP/opus-mt-en-ta',
+            }
+            
+            model_name = lang_map.get((src_lang, tgt_lang))
+            if model_name:
+                print(f"   Loading translation: {src_lang} -> {tgt_lang}...")
+                tokenizer = MarianTokenizer.from_pretrained(model_name)
+                model = MarianMTModel.from_pretrained(model_name)
+                _translation_models[key] = {'tokenizer': tokenizer, 'model': model}
+                print(f"   [OK] Translation model loaded")
+            else:
+                _translation_models[key] = None
+                
+        except Exception as e:
+            print(f"   [!] Translation model error: {e}")
+            _translation_models[key] = None
     
-    translated_segments = []
-    for seg in english_segments:
-        translated_segments.append({
-            'start': seg['start'],
-            'end': seg['end'],
-            'text': f"[ML] {seg['text']}"  # Placeholder - replace with actual translation
-        })
+    return _translation_models.get(key)
+
+def translate_segments_to_language(segments, src_lang, tgt_lang):
+    """Translate subtitle segments to target language"""
     
-    return translated_segments
+    trans_model = get_translation_model(src_lang, tgt_lang)
+    if not trans_model:
+        print(f"   [!] No translation model for {src_lang} -> {tgt_lang}")
+        return None
+    
+    translated = []
+    total = len(segments)
+    
+    for i, seg in enumerate(segments):
+        text = seg.get('text', '').strip()
+        if text:
+            try:
+                inputs = trans_model['tokenizer'](text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+                output = trans_model['model'].generate(**inputs)
+                translated_text = trans_model['tokenizer'].decode(output[0], skip_special_tokens=True)
+                translated.append({
+                    'start': seg['start'],
+                    'end': seg['end'],
+                    'text': translated_text
+                })
+            except Exception as e:
+                translated.append(seg)
+        else:
+            translated.append(seg)
+        
+        if (i + 1) % 20 == 0 or i == total - 1:
+            print(f"   Translated {i + 1}/{total} segments...", end='\r')
+    
+    print(f"\n   [OK] Translated {len(translated)} segments to {LANGUAGE_NAMES.get(tgt_lang, tgt_lang)}")
+    return translated
 
 def main():
     parser = argparse.ArgumentParser(description='Generate multi-language subtitles using Whisper AI')
@@ -220,34 +265,40 @@ def main():
     # =====================================================
     # STEP 1: Detect language and transcribe original
     # =====================================================
-    print(f"\n[1/3] Transcribing original audio...")
-    
-    if args.language and args.language.lower() != 'auto':
-        print(f"   Language: {LANG_MAP.get(args.language, args.language)}")
-    else:
-        print("   Language: Auto-detect")
+    print(f"\n[1/3] Transcribing & detecting language...")
     
     result_original = transcribe_audio(model, input_path, args.language, 'transcribe', device)
-    detected_lang = result_original.get('language', 'unknown')
-    print(f"   Detected: {LANG_MAP.get(detected_lang, detected_lang)}")
-    
+    detected_lang = result_original.get('language', 'en')
     segments_original = result_original['segments']
+    
+    print(f"   Detected: {LANGUAGE_NAMES.get(detected_lang, detected_lang)}")
     print(f"   [OK] Generated {len(segments_original)} subtitle segments")
     
     manifest['source_language'] = detected_lang
     
     # Save original language subtitles
     print(f"\n[*] Saving original language subtitles ({detected_lang})...")
-    lang_suffix = f"_{detected_lang}" if detected_lang != 'en' else ""
+    lang_suffix = "" if detected_lang == 'en' else f"_{detected_lang}"
     manifest['subtitles']['original'] = save_subtitles(
         segments_original, base_output, lang_suffix, args.format
     )
     manifest['subtitles']['original']['language'] = detected_lang
     
+    # Determine which languages to generate
+    if args.all_languages:
+        target_languages = [lang for lang in SUPPORTED_LANGUAGES if lang != detected_lang]
+    else:
+        target_languages = []
+        if args.translate and detected_lang != 'en':
+            target_languages.append('en')
+    
+    print(f"\n   Will generate subtitles for: {', '.join([LANGUAGE_NAMES.get(l, l) for l in target_languages])}")
+    
     # =====================================================
-    # STEP 2: Generate English translation (if not English)
+    # STEP 2: Get English translation if source is not English
     # =====================================================
-    if (args.translate or args.all_languages) and detected_lang != 'en':
+    segments_english = None
+    if detected_lang != 'en' and ('en' in target_languages or args.all_languages):
         print(f"\n[2/3] Translating to English...")
         
         result_english = transcribe_audio(model, input_path, args.language, 'translate', device)
@@ -255,80 +306,43 @@ def main():
         print(f"   [OK] Generated {len(segments_english)} English segments")
         
         # Save English translation
-        print(f"\n[*] Saving English translation subtitles...")
+        print(f"\n[*] Saving English subtitles...")
         manifest['subtitles']['english'] = save_subtitles(
             segments_english, base_output, "_en", args.format
         )
         manifest['subtitles']['english']['language'] = 'en'
-        
-        # Print sample
-        if segments_english:
-            sample = segments_english[0]['text'][:100].strip()
-            print(f"\n[*] English sample: \"{sample}...\"")
-    else:
-        print(f"\n[2/3] Source is English or translation not requested - skipping English translation")
+    elif detected_lang == 'en':
         segments_english = segments_original
+        print(f"\n[2/3] Source is English - using as base for translations")
+    else:
+        print(f"\n[2/3] English translation not requested - skipping")
     
     # =====================================================
-    # STEP 3: Generate Malayalam subtitles (for English videos)
+    # STEP 3: Generate other language subtitles
     # =====================================================
-    if args.all_languages and detected_lang == 'en':
-        print(f"\n[3/3] Generating Malayalam subtitles for English video...")
-        
-        # For English -> Malayalam, we need external translation
-        # Whisper can only translate TO English, not FROM English
-        # This would require Google Translate API or similar
-        
-        try:
-            # Try using transformers for translation if available
-            from transformers import MarianMTModel, MarianTokenizer
+    print(f"\n[3/3] Generating other language subtitles...")
+    
+    if args.all_languages and segments_english:
+        # Generate subtitles for each target language
+        for target_lang in target_languages:
+            if target_lang == 'en':
+                continue  # Already handled above
             
-            print("   Loading Helsinki-NLP translation model...")
-            model_name = 'Helsinki-NLP/opus-mt-en-ml'
+            lang_name = LANGUAGE_NAMES.get(target_lang, target_lang)
+            print(f"\n[*] Generating {lang_name} subtitles...")
             
-            try:
-                tokenizer = MarianTokenizer.from_pretrained(model_name)
-                translation_model = MarianMTModel.from_pretrained(model_name)
-                
-                print("   [OK] Translation model loaded")
-                
-                segments_malayalam = []
-                for i, seg in enumerate(segments_english):
-                    text = seg['text'].strip()
-                    if text:
-                        inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
-                        translated = translation_model.generate(**inputs)
-                        ml_text = tokenizer.decode(translated[0], skip_special_tokens=True)
-                        segments_malayalam.append({
-                            'start': seg['start'],
-                            'end': seg['end'],
-                            'text': ml_text
-                        })
-                    
-                    if (i + 1) % 10 == 0:
-                        print(f"   Translated {i + 1}/{len(segments_english)} segments...", end='\r')
-                
-                print(f"\n   [OK] Translated {len(segments_malayalam)} segments to Malayalam")
-                
-                # Save Malayalam subtitles
-                manifest['subtitles']['malayalam'] = save_subtitles(
-                    segments_malayalam, base_output, "_ml", args.format
+            # Translate from English to target language
+            translated_segments = translate_segments_to_language(segments_english, 'en', target_lang)
+            
+            if translated_segments:
+                manifest['subtitles'][target_lang] = save_subtitles(
+                    translated_segments, base_output, f"_{target_lang}", args.format
                 )
-                manifest['subtitles']['malayalam']['language'] = 'ml'
-                
-            except Exception as e:
-                print(f"   [!] Helsinki-NLP model not available: {e}")
-                print("   [!] To enable English->Malayalam translation, run:")
-                print("       pip install transformers sentencepiece")
-                print("   [!] Skipping Malayalam subtitle generation")
-                
-        except ImportError:
-            print("   [!] transformers library not installed")
-            print("   [!] To enable English->Malayalam translation, run:")
-            print("       pip install transformers sentencepiece")
-            print("   [!] Skipping Malayalam subtitle generation")
+                manifest['subtitles'][target_lang]['language'] = target_lang
+            else:
+                print(f"   [!] Skipping {lang_name} - translation not available")
     else:
-        print(f"\n[3/3] Malayalam generation not applicable - skipping")
+        print("   All-languages mode not enabled or no English base available")
     
     # Save manifest
     manifest_path = Path(str(base_output) + "_subtitles_manifest.json")
@@ -337,10 +351,12 @@ def main():
     print(f"\n[*] Manifest saved: {manifest_path}")
     
     print("\n" + "=" * 60)
-    print("[DONE] Subtitle generation complete!")
+    print("[DONE] Multi-Language Subtitle Generation Complete!")
     print("Generated subtitles:")
     for lang_key, data in manifest['subtitles'].items():
-        print(f"   - {lang_key}: {data.get('language', 'unknown')}")
+        lang_code = data.get('language', 'unknown')
+        lang_name = LANGUAGE_NAMES.get(lang_code, lang_code)
+        print(f"   - {lang_name} ({lang_code})")
     print("=" * 60)
 
 if __name__ == '__main__':
