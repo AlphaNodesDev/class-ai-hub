@@ -245,10 +245,11 @@ def get_translation_model(src_lang, tgt_lang):
             from transformers import MarianMTModel, MarianTokenizer
             
             # Map language codes to Helsinki-NLP model names
+            # Note: Not all language pairs have direct models
             lang_map = {
-                ('en', 'ml'): 'Helsinki-NLP/opus-mt-en-ml',
+                ('en', 'ml'): 'Helsinki-NLP/opus-mt-en-dra',  # Dravidian family (includes Malayalam)
                 ('en', 'hi'): 'Helsinki-NLP/opus-mt-en-hi',
-                ('en', 'ta'): 'Helsinki-NLP/opus-mt-en-ta',
+                ('en', 'ta'): 'Helsinki-NLP/opus-mt-en-dra',  # Dravidian family (includes Tamil)
                 ('ml', 'en'): None,  # Use Whisper translate
                 ('hi', 'en'): None,  # Use Whisper translate
                 ('ta', 'en'): None,  # Use Whisper translate
@@ -257,10 +258,25 @@ def get_translation_model(src_lang, tgt_lang):
             model_name = lang_map.get((src_lang, tgt_lang))
             if model_name:
                 print(f"   Loading translation model: {src_lang} -> {tgt_lang}...")
-                tokenizer = MarianTokenizer.from_pretrained(model_name)
-                model = MarianMTModel.from_pretrained(model_name)
-                _translation_models[key] = {'tokenizer': tokenizer, 'model': model}
-                print(f"   [OK] Translation model loaded")
+                try:
+                    tokenizer = MarianTokenizer.from_pretrained(model_name)
+                    model = MarianMTModel.from_pretrained(model_name)
+                    _translation_models[key] = {'tokenizer': tokenizer, 'model': model}
+                    print(f"   [OK] Translation model loaded")
+                except Exception as model_err:
+                    # Fallback: try alternative models
+                    print(f"   [!] Primary model not available: {model_err}")
+                    # Try multi-language model as fallback
+                    try:
+                        fallback = 'Helsinki-NLP/opus-mt-en-mul'
+                        print(f"   Trying fallback: {fallback}")
+                        tokenizer = MarianTokenizer.from_pretrained(fallback)
+                        model = MarianMTModel.from_pretrained(fallback)
+                        _translation_models[key] = {'tokenizer': tokenizer, 'model': model}
+                        print(f"   [OK] Fallback model loaded")
+                    except:
+                        _translation_models[key] = None
+                        print(f"   [!] Fallback also failed, will use TTS with transliteration")
             else:
                 _translation_models[key] = None
                 
@@ -659,7 +675,8 @@ def main():
             
             if result.returncode == 0 and track_output.exists():
                 print(f"   [OK] {lang_name}: {track_output.name}")
-                video_files[track['lang']] = str(track_output)
+                # Store relative path (just filename) for cross-platform compatibility
+                video_files[track['lang']] = f"/processed/{track_output.name}"
             else:
                 print(f"   [!] Failed: {lang_name}")
         
